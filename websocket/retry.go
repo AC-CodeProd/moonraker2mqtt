@@ -1,29 +1,14 @@
-package retry
+package websocket
 
 import (
 	"context"
 	"math"
-	"time"
-
 	"moonraker2mqtt/logger"
+	"time"
 )
 
-const (
-	INITIAL_RETRY_DELAY      = 1
-	MAX_RETRY_DELAY          = 60
-	RETRY_BACKOFF_MULTIPLIER = 2
-)
-
-type Manager struct {
-	enabled      bool
-	maxAttempts  int
-	currentDelay time.Duration
-	attempt      int
-	logger       logger.Logger
-}
-
-func NewManager(enabled bool, maxAttempts int, logger logger.Logger) *Manager {
-	return &Manager{
+func NewRetry(enabled bool, maxAttempts int, logger logger.Logger) *Retry {
+	return &Retry{
 		enabled:      enabled,
 		maxAttempts:  maxAttempts,
 		currentDelay: time.Duration(INITIAL_RETRY_DELAY) * time.Second,
@@ -32,7 +17,7 @@ func NewManager(enabled bool, maxAttempts int, logger logger.Logger) *Manager {
 	}
 }
 
-func (m *Manager) ShouldReconnect() bool {
+func (m *Retry) ShouldReconnect() bool {
 	if !m.enabled {
 		return false
 	}
@@ -45,7 +30,7 @@ func (m *Manager) ShouldReconnect() bool {
 	return true
 }
 
-func (m *Manager) WaitBeforeReconnect(ctx context.Context) error {
+func (m *Retry) WaitBeforeReconnect(ctx context.Context) error {
 	if m.attempt == 0 {
 		m.attempt++
 		return nil
@@ -71,7 +56,7 @@ func (m *Manager) WaitBeforeReconnect(ctx context.Context) error {
 	}
 }
 
-func (m *Manager) Reset() {
+func (m *Retry) Reset() {
 	m.attempt = 0
 	m.currentDelay = time.Duration(INITIAL_RETRY_DELAY) * time.Second
 	if m.enabled {
@@ -79,10 +64,10 @@ func (m *Manager) Reset() {
 	}
 }
 
-func (m *Manager) GetAttempt() int {
+func (m *Retry) GetAttempt() int {
 	return m.attempt
 }
 
-func (m *Manager) IsEnabled() bool {
+func (m *Retry) IsEnabled() bool {
 	return m.enabled
 }

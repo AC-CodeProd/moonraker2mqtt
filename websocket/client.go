@@ -14,7 +14,6 @@ import (
 
 	"moonraker2mqtt/config"
 	"moonraker2mqtt/logger"
-	"moonraker2mqtt/retry"
 )
 
 type WebSocketClient struct {
@@ -30,7 +29,7 @@ type WebSocketClient struct {
 	closeChan    chan struct{}
 	dataHandlers []DataHandler
 	handlersMux  sync.RWMutex
-	retryMgr     *retry.Manager
+	retry        *Retry
 	logger       logger.Logger
 }
 
@@ -45,7 +44,7 @@ func NewWebSocketClient(config *config.MoonrakerConfig, listener StatusListener,
 		sendChan:     make(chan *WebSocketMessage, 100),
 		closeChan:    make(chan struct{}),
 		dataHandlers: make([]DataHandler, 0),
-		retryMgr:     retry.NewManager(config.AutoReconnect, config.MaxReconnectAttempts, logger),
+		retry:        NewRetry(config.AutoReconnect, config.MaxReconnectAttempts, logger),
 		logger:       logger,
 	}
 }
@@ -53,11 +52,11 @@ func NewWebSocketClient(config *config.MoonrakerConfig, listener StatusListener,
 func (c *WebSocketClient) Connect(ctx context.Context) error {
 	err := c.connectOnce(ctx)
 	if err == nil {
-		c.retryMgr.Reset()
+		c.retry.Reset()
 		return nil
 	}
 
-	if !c.retryMgr.IsEnabled() {
+	if !c.retry.IsEnabled() {
 		return err
 	}
 
@@ -138,11 +137,11 @@ func (c *WebSocketClient) reconnectLoop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		default:
-			if !c.retryMgr.ShouldReconnect() {
+			if !c.retry.ShouldReconnect() {
 				return
 			}
 
-			if err := c.retryMgr.WaitBeforeReconnect(ctx); err != nil {
+			if err := c.retry.WaitBeforeReconnect(ctx); err != nil {
 				return
 			}
 
@@ -153,7 +152,7 @@ func (c *WebSocketClient) reconnectLoop(ctx context.Context) {
 			err := c.connectOnce(ctx)
 			if err == nil {
 				c.logger.Info("WebSocket reconnection successful")
-				c.retryMgr.Reset()
+				c.retry.Reset()
 				return
 			}
 
