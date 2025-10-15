@@ -1,0 +1,27 @@
+environment: development
+moonraker:
+    host: localhost
+    port: 7125
+    api_key: ""
+    ssl: false
+    timeout: 30
+    auto_reconnect: true
+    max_reconnect_attempts: 10
+    call_interval: 2
+    monitored_objects: '{"print_stats":null,"toolhead":["position"],"extruder":["temperature","target"],"heater_bed":["temperature","target"]}'
+mqtt:
+    host: localhost
+    port: 1883
+    username: ""
+    password: ""
+    use_tls: false
+    client_id: moonraker2mqtt
+    topic_prefix: moonraker
+    qos: 0
+    retain: false
+    auto_reconnect: true
+    max_reconnect_attempts: 10
+    commands_enabled: true
+logging:
+    level: info
+    format: text

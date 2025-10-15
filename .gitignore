@@ -1,0 +1,31 @@
+# If you prefer the allow list template instead of the deny list, see community template:
+# https://github.com/github/gitignore/blob/main/community/Golang/Go.AllowList.gitignore
+# Allowlisting gitignore template for GO projects prevents us
+# from adding various unwanted local files, such as generated
+# files, developer configurations or IDE-specific files etc.
+#
+# Recommended: Go.AllowList.gitignore
+# Ignore everything
+*
+# But not these files...
+!/.gitignore
+!*.gitkeep
+!*.go
+!.air.toml
+!package.json
+!pnpm-lock.yaml
+!go.mod
+!go.sum
+!Makefile
+!README.md
+!README_FR.md
+!LICENSE.txt
+!config.yaml
+# ...even if they are in subdirectories
+!*/
+
+!.github/workflows/release-please.yml
+!.github/workflows/auto-pull-requests.yml
+!.release-please-config.json
+!.release-please-manifest.json
+!VERSION

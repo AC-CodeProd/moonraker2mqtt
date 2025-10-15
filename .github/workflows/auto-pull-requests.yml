@@ -1,0 +1,122 @@
+name: auto-pull-requests-to-main
+on:
+  push:
+    branches-ignore:
+      - main
+      - release-please**
+      - dependabot/**
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+          cache: true
+          cache-dependency-path: go.sum
+
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Verify dependencies
+        run: go mod verify
+
+      - name: Check formatting
+        run: |
+          if [ "$(gofmt -l . | wc -l)" -gt 0 ]; then
+            echo "Code is not properly formatted:"
+            gofmt -l .
+            exit 1
+          fi
+
+      - name: Run go vet
+        run: go vet ./...
+
+      - name: Run tests
+        run: go test -v -race -coverprofile=coverage.out ./...
+
+      - name: Check test coverage
+        run: |
+          coverage=$(go tool cover -func=coverage.out | grep total | awk '{print $3}' | sed 's/%//')
+          echo "Current test coverage: ${coverage}%"
+          if (( $(echo "$coverage < 50" | bc -l) )); then
+            echo "Warning: Test coverage is below 50%"
+            echo "Please consider adding more tests"
+          fi
+
+      - name: Upload coverage to artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage.out
+
+  open-or-update-pull-request:
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - name: Extract branch
+        id: ctx
+        run: |
+          ref="${GITHUB_REF#refs/heads/}"
+          echo "branch=$ref" >> "$GITHUB_OUTPUT"
+
+      - name: Ensure PR exists (to main)
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const branch = "${{ steps.ctx.outputs.branch }}";
+            const owner  = context.repo.owner;
+            const repo   = context.repo.repo;
+
+            if (branch === "main" || branch.startsWith("release-please")) {
+              core.info(`Skip branch: ${branch}`);
+              return;
+            }
+
+            // Check if PR already exists
+            const prs = await github.rest.pulls.list({
+              owner, repo, state: "open", base: "main", head: `${owner}:${branch}`
+            });
+
+            const title = `Auto PR: ${branch} → main`;
+            const body  = [
+              "Automatic PR opened by *auto-pull-requests-to-main*.",
+              "",
+              "✅ **Tests Status:**",
+              "- Code formatting: Verified",
+              "- Static analysis (go vet): Passed", 
+              "- Unit tests: Passed",
+              "- Test coverage: Generated (see artifacts)",
+              "",
+              "📋 **Next Steps:**",
+              "- Please verify the CI checks.",
+              "- Review the test coverage report in artifacts.",
+            ].join("\n");
+
+            if (prs.data.length === 0) {
+              const { data } = await github.rest.pulls.create({
+                owner, repo, base: "main", head: branch, title, body,
+                draft: true
+              });
+              core.info(`Created PR #${data.number} for ${branch}`);
+            } else {
+              const pr = prs.data[0];
+              await github.rest.pulls.update({
+                owner, repo, pull_number: pr.number, title, body
+              });
+              core.info(`Updated PR #${pr.number} for ${branch}`);
+            }
