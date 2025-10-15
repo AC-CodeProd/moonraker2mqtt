@@ -1,10 +1,18 @@
 package websocket
 
+import (
+	"moonraker2mqtt/logger"
+	"time"
+)
+
 const (
 	WEB_SOCKET_STATE_CONNECTING = "ws_connecting"
 	WEB_SOCKET_STATE_CONNECTED  = "ws_connected"
 	WEB_SOCKET_STATE_STOPPING   = "ws_stopping"
 	WEB_SOCKET_STATE_STOPPED    = "ws_stopped"
+	INITIAL_RETRY_DELAY         = 1
+	MAX_RETRY_DELAY             = 60
+	RETRY_BACKOFF_MULTIPLIER    = 2
 )
 
 type WebSocketMessage struct {
@@ -61,4 +69,12 @@ type PrinterInfo struct {
 	Hostname        string         `json:"hostname"`
 	CPUInfo         string         `json:"cpu_info"`
 	Objects         map[string]any `json:"objects"`
+}
+
+type Retry struct {
+	enabled      bool
+	maxAttempts  int
+	currentDelay time.Duration
+	attempt      int
+	logger       logger.Logger
 }
