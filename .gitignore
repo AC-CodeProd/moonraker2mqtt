@@ -29,3 +29,6 @@
 !.release-please-config.json
 !.release-please-manifest.json
 !VERSION
+!Dockerfile
+!.dockerignore
+tmp
