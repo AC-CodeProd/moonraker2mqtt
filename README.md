@@ -354,11 +354,10 @@ moonraker2mqtt/
 │   ├── interface.go
 │   ├── message.go
 │   ├── struct.go
+│   ├── retry.go
 │   └── error.go
 ├── logger/                # Logging system
 │   └── logger.go
-├── retry/                 # Reconnection manager
-│   └── manager.go
 ├── utils/                 # Utilities
 │   └── utils.go
 └── version/               # Version information
