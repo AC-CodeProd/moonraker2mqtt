@@ -144,6 +144,7 @@ jobs:
         with:
           config-file: .release-please-config.json
           manifest-file: .release-please-manifest.json
+          token: ${{ secrets.PAT_TOKEN || secrets.GITHUB_TOKEN }}
 
   upload-release-assets:
     runs-on: ubuntu-latest
@@ -175,7 +176,7 @@ jobs:
 
       - name: Upload release assets
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.PAT_TOKEN || secrets.GITHUB_TOKEN }}
         run: |
           # Upload each file to the release
           for file in release-assets/*; do
