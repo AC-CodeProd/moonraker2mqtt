@@ -113,10 +113,12 @@ jobs:
           if [ "${{ matrix.goos }}" = "windows" ]; then
             BINARY_NAME="${BINARY_NAME}.exe"
           fi
+
+          PKG_VER=$(go list -m -f '{{.Path}}')/version
           
           # Build with version info
           go build \
-            -ldflags="-w -s -X 'main.Version=${{ steps.version.outputs.version }}' -X 'main.BuildDate=$(date -u +%Y-%m-%dT%H:%M:%SZ)' -X 'main.GitCommit=${GITHUB_SHA::8}'" \
+            -ldflags="-w -s -X '${PKG_VER}.Version=${{ steps.version.outputs.version }}' -X '${PKG_VER}.BuildDate=$(date -u +%Y-%m-%dT%H:%M:%SZ)' -X '${PKG_VER}.GitCommit=${GITHUB_SHA::8}' -X '${PKG_VER}.GitURL=https://github.com/${{ github.repository }}'" \
             -o "builds/${BINARY_NAME}" \
             ./cmd/main.go
           

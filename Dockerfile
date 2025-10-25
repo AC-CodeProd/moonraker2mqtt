@@ -24,12 +24,13 @@ ENV CGO_ENABLED=0
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
     GOOS=$TARGETOS GOARCH=$TARGETARCH \
+    PKG_VER=$(go list -m -f '{{.Path}}')/version && \
     go build -mod=readonly -trimpath \
       -ldflags="-s -w -buildid= \
-                -X 'main.Version=${VERSION}' \
-                -X 'main.BuildDate=${BUILD_DATE}' \
-                -X 'main.GitCommit=${VCS_REF}' \
-                -X 'main.GitURL=${VCS_URL}'" \
+                -X '${PKG_VER}.Version=${VERSION}' \
+                -X '${PKG_VER}.BuildDate=${BUILD_DATE}' \
+                -X '${PKG_VER}.GitCommit=${VCS_REF}' \
+                -X '${PKG_VER}.GitURL=${VCS_URL}'" \
       -o /out/moonraker2mqtt ./cmd/main.go
 
 RUN mkdir -p /out/logs \
