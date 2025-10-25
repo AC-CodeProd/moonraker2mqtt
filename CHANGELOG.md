@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.0](https://github.com/AC-CodeProd/moonraker2mqtt/compare/v0.2.0...v0.3.0) (2025-10-25)
+
+
+### Features
+
+* enhance connection robustness and observability ([cc20269](https://github.com/AC-CodeProd/moonraker2mqtt/commit/cc202696f20fea99914c087e852f526a27a22797))
+
 ## [0.2.0](https://github.com/AC-CodeProd/moonraker2mqtt/compare/v0.1.0...v0.2.0) (2025-10-25)
 
 
