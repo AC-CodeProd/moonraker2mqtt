@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.1](https://github.com/AC-CodeProd/moonraker2mqtt/compare/v0.3.0...v0.3.1) (2025-10-25)
+
+
+### Bug Fixes
+
+* **docker:** improve logging setup and file permissions ([d8d567c](https://github.com/AC-CodeProd/moonraker2mqtt/commit/d8d567c528e2f5e725cd76b580a8651ed0de5dc5))
+
 ## [0.3.0](https://github.com/AC-CodeProd/moonraker2mqtt/compare/v0.2.0...v0.3.0) (2025-10-25)
 
 
