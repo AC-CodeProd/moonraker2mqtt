@@ -171,11 +171,15 @@ func (c *WebSocketClient) Disconnect() error {
 
 	c.setState(WEB_SOCKET_STATE_STOPPING)
 
-	close(c.closeChan)
+	select {
+	case <-c.closeChan:
+	default:
+		close(c.closeChan)
+	}
 
 	if c.conn != nil {
 		if closeErr := c.conn.Close(); closeErr != nil {
-			c.logger.Error("Failed to close WebSocket connection", "error", closeErr)
+			c.logger.Debug("WebSocket connection closed during shutdown: %v", closeErr)
 		}
 		c.conn = nil
 	}
@@ -264,12 +268,16 @@ func (c *WebSocketClient) readLoop() {
 				if err == io.EOF {
 					c.logger.Info("Connection closed by server")
 				} else {
-					c.logger.Error("Read error: %v", err)
+					if c.GetState() == WEB_SOCKET_STATE_STOPPING || c.GetState() == WEB_SOCKET_STATE_STOPPED {
+						c.logger.Debug("Read error during shutdown (expected): %v", err)
+					} else {
+						c.logger.Error("Read error: %v, State: %s", err, c.GetState())
+						if c.listener != nil {
+							c.listener.OnException(NewWebSocketError("read error", err))
+						}
+					}
 				}
 				c.setState(WEB_SOCKET_STATE_STOPPED)
-				if c.listener != nil {
-					c.listener.OnException(NewWebSocketError("read error", err))
-				}
 				return
 			}
 
