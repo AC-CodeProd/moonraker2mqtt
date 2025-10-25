@@ -88,8 +88,9 @@ RUN addgroup -S app && adduser -S -G app app \
     && apk add --no-cache ca-certificates tzdata bash curl \
     && update-ca-certificates
 WORKDIR /app
+RUN mkdir -p /app/logs && chown -R app:app /app
+RUN ln -sf /dev/stdout /app/logs/moonraker2mqtt.log
 USER app
-RUN mkdir -p /app /app/logs
 COPY --from=builder --chown=app:app /out/moonraker2mqtt /app/moonraker2mqtt
 COPY --from=builder --chown=app:app /src/config.yaml /app/config.yaml
 
