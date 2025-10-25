@@ -315,9 +315,25 @@ func main() {
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 
 	go func() {
-		<-sigChan
-		log.Println("Received shutdown signal")
-		cancel()
+		sigCount := 0
+		for {
+			<-sigChan
+			sigCount++
+			if sigCount == 1 {
+				log.Println("Received shutdown signal")
+				log.Println("Initiating graceful shutdown... (press Ctrl+C again to force quit)")
+				cancel()
+
+				go func() {
+					time.Sleep(10 * time.Second)
+					log.Println("Force shutdown after 10 seconds")
+					os.Exit(1)
+				}()
+			} else {
+				log.Println("Force quit requested")
+				os.Exit(1)
+			}
+		}
 	}()
 
 	if err := app.Run(ctx); err != nil {

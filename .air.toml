@@ -19,8 +19,8 @@ follow_symlink = true
 log = "air.log"
 delay = 500
 stop_on_error = true
-send_interrupt = false
-kill_delay = 300
+send_interrupt = true
+kill_delay = 500
 pre_cmd = [
   "go vet ./...",
   "GOFLAGS='-buildvcs=false' golangci-lint run ./...",
