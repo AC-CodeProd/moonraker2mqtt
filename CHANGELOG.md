@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.0](https://github.com/AC-CodeProd/moonraker2mqtt/compare/v0.3.1...v0.4.0) (2025-10-25)
+
+
+### Features
+
+* add version information logging on application startup ([fe65c31](https://github.com/AC-CodeProd/moonraker2mqtt/commit/fe65c31f232a8678791686e8d6c630c910292364))
+
 ## [0.3.1](https://github.com/AC-CodeProd/moonraker2mqtt/compare/v0.3.0...v0.3.1) (2025-10-25)
 
 
