@@ -102,6 +102,7 @@ func (a *App) OnException(err error) {
 
 func (a *App) Run(ctx context.Context) error {
 	a.logger.Info("Starting Moonraker2MQTT")
+	a.logger.Info("Version: %s, Git Commit: %s, Build Date: %s", version.Version, version.GitCommit, version.BuildDate)
 
 	if err := a.mqttClient.Connect(); err != nil {
 		return fmt.Errorf("failed to connect to MQTT broker: %w", err)
