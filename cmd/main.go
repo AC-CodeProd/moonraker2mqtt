@@ -71,6 +71,8 @@ func (a *App) OnStateChanged(state string) {
 		if err := a.mqttClient.Publish(topic, payload, a.config.MQTT.QoS, a.config.MQTT.Retain, 3); err != nil {
 			a.logger.Error("Failed to publish state to MQTT after retries: %v", err)
 		}
+	} else {
+		a.logger.Warn("Cannot publish state change - MQTT not connected")
 	}
 }
 
@@ -89,6 +91,8 @@ func (a *App) OnNotification(method string, params any) {
 		if err := a.mqttClient.Publish(topic, data, a.config.MQTT.QoS, a.config.MQTT.Retain, 3); err != nil {
 			a.logger.Error("Failed to publish notification to MQTT after retries: %v", err)
 		}
+	} else {
+		a.logger.Warn("Cannot publish notification '%s' - MQTT not connected", method)
 	}
 }
 
@@ -195,12 +199,59 @@ func (a *App) periodicMonitoring(ctx context.Context) {
 
 	consecutiveErrors := 0
 	maxConsecutiveErrors := 5
+	lastReconnectAttempt := time.Time{}
+	reconnectCooldown := 30 * time.Second
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			mqttConnected := a.mqttClient.IsConnected()
+			moonrakerConnected := a.moonrakerClient.IsConnected()
+
+			if !moonrakerConnected && time.Since(lastReconnectAttempt) > reconnectCooldown {
+				a.logger.Warn("Moonraker disconnected, attempting reconnection...")
+				lastReconnectAttempt = time.Now()
+
+				if err := a.moonrakerClient.Connect(ctx); err != nil {
+					a.logger.Error("Failed to reconnect Moonraker: %v", err)
+					consecutiveErrors++
+					continue
+				} else {
+					a.logger.Info("Moonraker reconnected successfully")
+				}
+			}
+
+			if !mqttConnected && time.Since(lastReconnectAttempt) > reconnectCooldown {
+				a.logger.Warn("MQTT disconnected, attempting reconnection...")
+				lastReconnectAttempt = time.Now()
+
+				if err := a.mqttClient.Connect(); err != nil {
+					a.logger.Error("Failed to reconnect MQTT: %v", err)
+					consecutiveErrors++
+					continue
+				} else {
+					a.logger.Info("MQTT reconnected successfully")
+					if a.config.MQTT.CommandsEnabled {
+						commandTopic := fmt.Sprintf("%s/%s", a.config.MQTT.TopicPrefix, "commands")
+						if err := a.mqttClient.Subscribe(commandTopic, a.moonrakerClient.HandleCommand); err != nil {
+							a.logger.Warn("Failed to re-subscribe to command topic %s after reconnection: %v", commandTopic, err)
+						} else {
+							a.logger.Info("Re-subscribed to command topic: %s", commandTopic)
+						}
+					}
+				}
+			}
+
+			if !mqttConnected || !moonrakerConnected {
+				consecutiveErrors++
+				if consecutiveErrors <= 5 {
+					a.logger.Warn("Skipping status publication - MQTT=%t, Moonraker=%t", mqttConnected, moonrakerConnected)
+				}
+				continue
+			}
+
 			if err := a.publishStatus(ctx); err != nil {
 				consecutiveErrors++
 				a.logger.Error("Failed to publish periodic status (error %d/%d): %v", consecutiveErrors, maxConsecutiveErrors, err)

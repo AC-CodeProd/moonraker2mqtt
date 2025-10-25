@@ -102,6 +102,8 @@ func (c *PahoClient) IsConnected() bool {
 }
 
 func (c *PahoClient) Publish(topic string, payload []byte, qos byte, retain bool, maxRetries int) error {
+	c.logger.Debug("Publishing message to topic:%s, payload:%s, qos:%d, retain:%t", topic, string(payload), qos, retain)
+
 	if !c.IsConnected() {
 		return fmt.Errorf("not connected to MQTT broker")
 	}
