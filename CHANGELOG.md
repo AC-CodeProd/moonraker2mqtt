@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.1](https://github.com/AC-CodeProd/moonraker2mqtt/compare/v0.4.0...v0.4.1) (2025-10-26)
+
+
+### Miscellaneous Chores
+
+* release 0.4.1 ([b12ae2a](https://github.com/AC-CodeProd/moonraker2mqtt/commit/b12ae2aa75d30a0ff5b0dd87525e80aa6abf33cf))
+
 ## [0.4.0](https://github.com/AC-CodeProd/moonraker2mqtt/compare/v0.3.1...v0.4.0) (2025-10-25)
 
 
