@@ -4,8 +4,11 @@ ARG DISTROLESS_TAG=latest
 
 FROM --platform=$BUILDPLATFORM golang:${GO_VERSION}-alpine AS builder
 
+ARG TARGETPLATFORM
 ARG TARGETOS
 ARG TARGETARCH
+ARG TARGETVARIANT
+
 ARG VERSION=dev
 ARG BUILD_DATE
 ARG VCS_REF
@@ -21,10 +24,17 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 COPY . .
 
 ENV CGO_ENABLED=0
+
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
-    GOOS=$TARGETOS GOARCH=$TARGETARCH \
-    PKG_VER=$(go list -m -f '{{.Path}}')/version && \
+    set -eux; \
+    os="${TARGETOS:-$(echo "${TARGETPLATFORM}" | cut -d/ -f1)}"; \
+    arch="${TARGETARCH:-$(echo "${TARGETPLATFORM}" | cut -d/ -f2)}"; \
+    variant="${TARGETVARIANT:-$(echo "${TARGETPLATFORM}" | cut -d/ -f3)}"; \
+    if [ "${arch}" = "arm" ] && [ -n "${variant}" ]; then export GOARM="${variant#v}"; fi; \
+    export GOOS="${os}" GOARCH="${arch}"; \
+    echo ">> building for GOOS=${GOOS} GOARCH=${GOARCH} GOARM=${GOARM:-} (TARGETPLATFORM=${TARGETPLATFORM:-unknown})"; \
+    PKG_VER=$(go list -m -f '{{.Path}}')/version; \
     go build -mod=readonly -trimpath \
       -ldflags="-s -w -buildid= \
                 -X '${PKG_VER}.Version=${VERSION}' \
