@@ -1,9 +1,18 @@
 # Moonraker2MQTT
 
-[![Go Version](https://img.shields.io/badge/Go-1.24-blue.svg)](https://golang.org/)
+[![Go Version](https://img.shields.io/badge/Go-1.24.4-blue.svg)](https://golang.org/)
 [![License: GPL-3.0](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 
 A performant and robust bridge between Moonraker (Klipper) and MQTT, written in Go. This project enables seamless integration of your 3D printer with home automation systems like Home Assistant, Node-RED, or any other MQTT-compatible system.
+
+[Français](README_FR.md)
+
+## Supported targets
+
+- **Hosted application:** Linux, Windows and macOS; existing runtime behavior is preserved.
+- **Experimental firmware:** ESP32-S3 with TinyGo, targeting the Waveshare ESP32-S3-Zero. Compilation is validated; on-device operation is not yet validated.
+
+The ESP32-S3 work is currently on `feat/esp32s3-platform-structure`, not merged into `main`. Select this branch before following the source build instructions below. YAML, environment variables, file logs and systemd instructions apply to the hosted application only. See [ESP32-S3 firmware](#esp32-s3-firmware-experimental) for embedded settings and limitations.
 
 ## 🚀 Features
 
@@ -23,6 +32,7 @@ A performant and robust bridge between Moonraker (Klipper) and MQTT, written in 
 - [MQTT Commands](#-mqtt-commands)
 - [Integrations](#-integrations)
 - [Development](#-development)
+- [ESP32-S3 firmware](#esp32-s3-firmware-experimental)
 - [Support](#-support)
 
 ## 🔧 Installation
@@ -43,6 +53,7 @@ sudo mv moonraker2mqtt-*-linux-amd64 /usr/local/bin/moonraker2mqtt
 ```bash
 git clone https://github.com/AC-CodeProd/moonraker2mqtt.git
 cd moonraker2mqtt
+git switch feat/esp32s3-platform-structure
 go mod download
 go build -o moonraker2mqtt ./cmd/moonraker2mqtt
 ```
@@ -318,6 +329,7 @@ sudo systemctl status moonraker2mqtt
 ```bash
 git clone https://github.com/AC-CodeProd/moonraker2mqtt.git
 cd moonraker2mqtt
+git switch feat/esp32s3-platform-structure
 
 # Install dependencies
 go mod download
@@ -349,6 +361,7 @@ config/                   # Portable schemas/helpers; host-only YAML/env/fs load
 logger/                   # Portable contract/serial writer; host-only file logger
 platform/host/            # Host assembly
 platform/esp32s3/         # Link-time configuration and native Wi-Fi boot
+utils/                    # Hosted application utilities
 version/                  # Shared build metadata
 ```
 
@@ -372,7 +385,16 @@ GOOS=darwin GOARCH=arm64 go build -o moonraker2mqtt-darwin-arm64 ./cmd/moonraker
 ```
 
 
-### ESP32-S3 firmware foundation (experimental)
+## ESP32-S3 firmware (experimental)
+
+### Requirements
+
+- Waveshare ESP32-S3-Zero (ESP32-S3FH4R2), a USB-C data cable and a trusted 2.4 GHz Wi-Fi network.
+- Moonraker and a private MQTT broker reachable from the board; use their network addresses, not `localhost`.
+- Go 1.24.4+ and Make; Docker for `make firmware`, or local TinyGo 0.42.0 for `make firmware-local`.
+- The firmware is built separately and is not included in the hosted GitHub release assets.
+
+### Build and configuration
 
 The hosted application retains its YAML/.env loader, flags, file logging,
 Paho adapter, polling, topics and command behavior. Firmware reuses the bridge
@@ -413,6 +435,12 @@ Firmware and build logs/command history can expose embedded credentials.
 Treat the resulting binary as a secret; use a private broker/trusted LAN.
 Complex quoting in secrets requires correctly escaped linker flags; no
 runtime environment/YAML/flash configuration is provided.
+
+### Validation status and limits
+
+A configured TinyGo 0.42.0 build with commands enabled uses **1,270,975 bytes of flash** and **154,876 bytes of static RAM**. These figures exclude dynamic allocations and runtime stack usage. Measure with representative nonempty settings: a build that rejects empty settings at startup can eliminate most of the application.
+
+Before using the bridge, on-device acceptance must cover boot, Wi-Fi association, MQTT/WebSocket connection, status publication, command delivery, independent disconnections and extended runtime. No flashing procedure has been validated on the board yet.
 
 Limits: plain TCP MQTT and `ws://` only, MQTT QoS0, exact-topic subscriptions
 (maximum 4), MQTT payloads up to 4096 bytes, topic strings up to 256 bytes,

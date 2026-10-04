@@ -1,9 +1,18 @@
 # Moonraker2MQTT
 
-[![Go Version](https://img.shields.io/badge/Go-1.24-blue.svg)](https://golang.org/)
+[![Go Version](https://img.shields.io/badge/Go-1.24.4-blue.svg)](https://golang.org/)
 [![License: GPL-3.0](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 
 Un pont performant et robuste entre Moonraker (Klipper) et MQTT, écrit en Go. Ce projet permet l'intégration transparente de votre imprimante 3D avec des systèmes domotiques comme Home Assistant, Node-RED, ou tout autre système compatible MQTT.
+
+[English](README.md)
+
+## Cibles disponibles
+
+- **Application hôte :** Linux, Windows et macOS ; comportement existant conservé.
+- **Firmware expérimental :** ESP32-S3 avec TinyGo, pour le Waveshare ESP32-S3-Zero. La compilation est vérifiée ; le fonctionnement sur carte reste à valider.
+
+Le portage ESP32-S3 est actuellement sur `feat/esp32s3-platform-structure`, sans fusion dans `main`. Sélectionner cette branche avant de suivre les commandes de compilation ci-dessous. Les instructions YAML, variables d’environnement, logs fichiers et systemd concernent uniquement l’application hôte. Voir [Firmware ESP32-S3](#firmware-esp32-s3-expérimental) pour la configuration embarquée et ses limites.
 
 ## 🚀 Fonctionnalités
 
@@ -23,6 +32,7 @@ Un pont performant et robuste entre Moonraker (Klipper) et MQTT, écrit en Go. C
 - [Commandes MQTT](#-commandes-mqtt)
 - [Intégrations](#-intégrations)
 - [Développement](#-développement)
+- [Firmware ESP32-S3](#firmware-esp32-s3-expérimental)
 - [Support](#-support)
 
 ## 🔧 Installation
@@ -41,6 +51,7 @@ sudo mv moonraker2mqtt-*-linux-amd64 /usr/local/bin/moonraker2mqtt
 ```bash
 git clone https://github.com/AC-CodeProd/moonraker2mqtt.git
 cd moonraker2mqtt
+git switch feat/esp32s3-platform-structure
 go mod download
 go build -o moonraker2mqtt ./cmd/moonraker2mqtt
 ```
@@ -316,6 +327,7 @@ sudo systemctl status moonraker2mqtt
 ```bash
 git clone https://github.com/AC-CodeProd/moonraker2mqtt.git
 cd moonraker2mqtt
+git switch feat/esp32s3-platform-structure
 
 # Installation des dépendances
 go mod download
@@ -335,19 +347,20 @@ go tool cover -html=coverage.out
 ### Structure du projet
 
 ```text
-cmd/moonraker2mqtt/        # Hosted CLI (Linux, Windows, macOS)
-cmd/moonraker2mqtt-esp32/  # TinyGo ESP32-S3 entrypoint
-bridge/                   # Shared application, topics, polling and commands
-moonraker/                # Shared Moonraker JSON-RPC client
-websocket/                # Shared transport; platform-specific resource limits
-mqtt/interface.go         # Shared MQTT contract
-mqtt/paho.go              # Hosted Paho adapter (!tinygo)
-mqtt/natiu.go             # Firmware natiu adapter (tinygo or local natiu tests)
-config/                   # Portable schemas/helpers; host-only YAML/env/fs loader
-logger/                   # Portable contract/serial writer; host-only file logger
-platform/host/            # Host assembly
-platform/esp32s3/         # Link-time configuration and native Wi-Fi boot
-version/                  # Shared build metadata
+cmd/moonraker2mqtt/        # Application hôte (Linux, Windows, macOS)
+cmd/moonraker2mqtt-esp32/  # Point d’entrée TinyGo ESP32-S3
+bridge/                   # Logique commune : topics, surveillance et commandes
+moonraker/                # Client JSON-RPC Moonraker partagé
+websocket/                # Transport partagé et limites propres à chaque cible
+mqtt/interface.go         # Contrat MQTT commun
+mqtt/paho.go              # Adaptateur Paho pour l’hôte (!tinygo)
+mqtt/natiu.go             # Adaptateur natiu pour le firmware et les tests locaux
+config/                   # Configuration portable ; chargement YAML/env côté hôte
+logger/                   # Interface et logs série ; logs fichiers côté hôte
+platform/host/            # Assemblage de l’application hôte
+platform/esp32s3/         # Configuration à la compilation et démarrage Wi-Fi
+utils/                    # Utilitaires de l’application hôte
+version/                  # Métadonnées de compilation communes
 ```
 
 ### Contributions
@@ -370,7 +383,16 @@ GOOS=darwin GOARCH=arm64 go build -o moonraker2mqtt-darwin-arm64 ./cmd/moonraker
 ```
 
 
-### Fondation ESP32-S3 (expérimentale)
+## Firmware ESP32-S3 (expérimental)
+
+### Prérequis
+
+- Waveshare ESP32-S3-Zero (ESP32-S3FH4R2), câble USB-C de données et réseau Wi-Fi 2,4 GHz de confiance.
+- Moonraker et un broker MQTT privé accessibles depuis la carte ; utiliser leurs adresses réseau, pas `localhost`.
+- Go 1.24.4+ et Make ; Docker pour `make firmware`, ou TinyGo 0.42.0 installé localement pour `make firmware-local`.
+- Le firmware se compile séparément et n’est pas inclus dans les releases GitHub de l’application hôte.
+
+### Compilation et configuration
 
 La cible Linux conserve YAML/.env, les flags, les logs fichiers, Paho,
 les topics, le polling et les commandes existantes. La cible embarquée
@@ -410,6 +432,12 @@ ou l'historique de compilation : garder le binaire privé. Les commandes
 imprimante sont désactivées par défaut. Utiliser uniquement un LAN de
 confiance et un broker privé : MQTT TCP et WebSocket `ws://`, sans TLS.
 Pas d'OTA, portail captif, NVS, watchdog ni procédure de flash spécifique.
+
+### État de validation et limites
+
+Une compilation TinyGo 0.42.0 configurée avec les commandes activées utilise **1 270 975 octets de flash** et **154 876 octets de RAM statique**. Ces chiffres ne couvrent pas les allocations dynamiques ni les piles à l’exécution. Utiliser des paramètres non vides pour mesurer : avec une configuration rejetée au démarrage, le compilateur peut éliminer une grande partie de l’application.
+
+Avant utilisation, les essais sur carte doivent couvrir le démarrage, le Wi-Fi, les connexions MQTT/WebSocket, la publication des états, les commandes, les déconnexions indépendantes et un fonctionnement prolongé. Aucune procédure de flash n’a encore été validée sur la carte.
 
 Limites embarquées : QoS0, 4 abonnements à des topics exacts, payload MQTT
 4096 octets, topics 256 octets, file de 4 commandes entrantes (surplus
