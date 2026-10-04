@@ -44,7 +44,7 @@ sudo mv moonraker2mqtt-*-linux-amd64 /usr/local/bin/moonraker2mqtt
 git clone https://github.com/AC-CodeProd/moonraker2mqtt.git
 cd moonraker2mqtt
 go mod download
-go build -o moonraker2mqtt ./cmd/main.go
+go build -o moonraker2mqtt ./cmd/moonraker2mqtt
 ```
 
 ## ⚙️ Configuration
@@ -311,7 +311,7 @@ sudo systemctl status moonraker2mqtt
 
 ### Prerequisites
 
-- Go 1.24+
+- Go 1.24.4+
 
 ### Development environment setup
 
@@ -336,32 +336,20 @@ go tool cover -html=coverage.out
 
 ### Project structure
 
-```
-moonraker2mqtt/
-├── cmd/                    # Application entry point
-│   ├── main.go
-│   └── main_test.go
-├── config/                 # Configuration management
-│   ├── config.go
-│   ├── struct.go
-│   └── config_test.go
-├── moonraker/             # Moonraker/Klipper client
-│   └── client.go
-├── mqtt/                  # MQTT client
-│   └── paho_client.go
-├── websocket/             # WebSocket client
-│   ├── client.go
-│   ├── interface.go
-│   ├── message.go
-│   ├── struct.go
-│   ├── retry.go
-│   └── error.go
-├── logger/                # Logging system
-│   └── logger.go
-├── utils/                 # Utilities
-│   └── utils.go
-└── version/               # Version information
-    └── version.go
+```text
+cmd/moonraker2mqtt/        # Hosted CLI (Linux, Windows, macOS)
+cmd/moonraker2mqtt-esp32/  # TinyGo ESP32-S3 entrypoint
+bridge/                   # Shared application, topics, polling and commands
+moonraker/                # Shared Moonraker JSON-RPC client
+websocket/                # Shared transport; platform-specific resource limits
+mqtt/interface.go         # Shared MQTT contract
+mqtt/paho.go              # Hosted Paho adapter (!tinygo)
+mqtt/natiu.go             # Firmware natiu adapter (tinygo or local natiu tests)
+config/                   # Portable schemas/helpers; host-only YAML/env/fs loader
+logger/                   # Portable contract/serial writer; host-only file logger
+platform/host/            # Host assembly
+platform/esp32s3/         # Link-time configuration and native Wi-Fi boot
+version/                  # Shared build metadata
 ```
 
 ### Contributing
@@ -376,12 +364,69 @@ moonraker2mqtt/
 
 ```bash
 # Manual build for different architectures
-GOOS=linux GOARCH=amd64 go build -o moonraker2mqtt-linux-amd64 ./cmd/main.go
-GOOS=linux GOARCH=arm64 go build -o moonraker2mqtt-linux-arm64 ./cmd/main.go
-GOOS=windows GOARCH=amd64 go build -o moonraker2mqtt-windows-amd64.exe ./cmd/main.go
-GOOS=darwin GOARCH=amd64 go build -o moonraker2mqtt-darwin-amd64 ./cmd/main.go
-GOOS=darwin GOARCH=arm64 go build -o moonraker2mqtt-darwin-arm64 ./cmd/main.go
+GOOS=linux GOARCH=amd64 go build -o moonraker2mqtt-linux-amd64 ./cmd/moonraker2mqtt
+GOOS=linux GOARCH=arm64 go build -o moonraker2mqtt-linux-arm64 ./cmd/moonraker2mqtt
+GOOS=windows GOARCH=amd64 go build -o moonraker2mqtt-windows-amd64.exe ./cmd/moonraker2mqtt
+GOOS=darwin GOARCH=amd64 go build -o moonraker2mqtt-darwin-amd64 ./cmd/moonraker2mqtt
+GOOS=darwin GOARCH=arm64 go build -o moonraker2mqtt-darwin-arm64 ./cmd/moonraker2mqtt
 ```
+
+
+### ESP32-S3 firmware foundation (experimental)
+
+The hosted application retains its YAML/.env loader, flags, file logging,
+Paho adapter, polling, topics and command behavior. Firmware reuses the bridge
+and Moonraker/WebSocket client, with native Wi-Fi (`espradio`), serial logging
+and a bounded `natiu-mqtt` MQTT 3.1.1 adapter. It does **not** import Paho,
+Gorilla WebSocket, YAML/dotenv or the host filesystem logger.
+
+```sh
+make test vet build
+./build/moonraker2mqtt -version
+make test-firmware-adapter
+# Compile-only firmware, with empty credentials: boot rejects missing settings.
+make firmware
+```
+
+Pinned compiler: `tinygo/tinygo:0.42.0`; target: `esp32s3-generic`.
+The intended board is Waveshare ESP32-S3 Zero (FH4R2, 4 MB flash, 2 MB
+PSRAM, GPIO21 RGB LED). This foundation does not assume PSRAM availability,
+use the second core, drive the LED, or select `esp32s3-supermini`.
+The compiler/build is validated, **not the board or live network path**.
+
+Supply settings via TinyGo link-time strings (package
+`moonraker2mqtt/platform/esp32s3`). A local compiler can use the same flags
+with `make firmware-local`:
+
+```sh
+# Example values only: never commit real credentials or firmware containing them.
+make firmware FIRMWARE_LDFLAGS="-X 'moonraker2mqtt/platform/esp32s3.WiFiSSID=my-network' -X 'moonraker2mqtt/platform/esp32s3.WiFiPassword=example-only' -X 'moonraker2mqtt/platform/esp32s3.MoonrakerHost=192.0.2.10' -X 'moonraker2mqtt/platform/esp32s3.MQTTHost=192.0.2.20'"
+```
+
+Required: `WiFiSSID`, `MoonrakerHost`, `MQTTHost`. `WiFiPassword` may be
+empty for an open network. Optional: `MoonrakerPort` (7125), `MoonrakerAPIKey`,
+`MQTTPort` (1883), `MQTTUsername`, `MQTTPassword`, `MQTTClientID`
+(moonraker2mqtt-esp32), `MQTTTopicPrefix` (moonraker), `CommandsEnabled`
+(false), `CallInterval` (5 seconds), `LogLevel` (info).
+Commands are disabled by default; enabling them permits printer control.
+Firmware and build logs/command history can expose embedded credentials.
+Treat the resulting binary as a secret; use a private broker/trusted LAN.
+Complex quoting in secrets requires correctly escaped linker flags; no
+runtime environment/YAML/flash configuration is provided.
+
+Limits: plain TCP MQTT and `ws://` only, MQTT QoS0, exact-topic subscriptions
+(maximum 4), MQTT payloads up to 4096 bytes, topic strings up to 256 bytes,
+4 queued incoming commands (overflow drops with a warning), 4 queued
+WebSocket messages, 8 pending JSON-RPC requests, 16 KiB incoming WebSocket
+frames. Oversized MQTT messages fail rather than pretending to publish;
+QoS0 publishes do not retry potentially delivered messages. UNSUBSCRIBE is
+sent to the broker and removes the local handler without waiting for UNSUBACK.
+The serial console uses TinyGo's target standard output. No OTA, captive
+portal, NVS persistence, TLS, watchdog or hardware-specific flashing automation
+is included. Existing host reconnection logic is reused; independent Wi-Fi,
+broker and printer reconnects, memory behavior and long soak tests remain
+hardware acceptance gates. No live printer/broker is contacted by local tests.
+`build/firmware.bin` is ignored by Git and is not added to hosted release assets.
 
 ## 🐛 Troubleshooting
 

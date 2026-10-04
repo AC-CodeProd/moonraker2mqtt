@@ -41,7 +41,7 @@ func NewWebSocketClient(config *config.MoonrakerConfig, listener StatusListener,
 		state:        WEB_SOCKET_STATE_STOPPED,
 		requests:     make(map[int]*WebSocketRequest),
 		nextID:       1,
-		sendChan:     make(chan *WebSocketMessage, 100),
+		sendChan:     make(chan *WebSocketMessage, sendQueueSize),
 		closeChan:    make(chan struct{}),
 		dataHandlers: make([]DataHandler, 0),
 		retry:        NewRetry(config.AutoReconnect, config.MaxReconnectAttempts, logger),
@@ -118,9 +118,10 @@ func (c *WebSocketClient) connectOnce(ctx context.Context) error {
 		}
 
 		c.conn = res.conn
+		configureConnection(c.conn)
 		c.setState(WEB_SOCKET_STATE_CONNECTED)
 
-		c.sendChan = make(chan *WebSocketMessage, 100)
+		c.sendChan = make(chan *WebSocketMessage, sendQueueSize)
 		c.closeChan = make(chan struct{})
 
 		go c.readLoop()
@@ -357,6 +358,10 @@ func (c *WebSocketClient) SendRequestWithTimeout(method string, params any, time
 	}
 
 	c.requestsMux.Lock()
+	if maxPendingRequests > 0 && len(c.requests) >= maxPendingRequests {
+		c.requestsMux.Unlock()
+		return nil, NewWebSocketError("pending request limit reached", nil)
+	}
 	id := c.nextID
 	c.nextID++
 

@@ -42,7 +42,7 @@ sudo mv moonraker2mqtt-*-linux-amd64 /usr/local/bin/moonraker2mqtt
 git clone https://github.com/AC-CodeProd/moonraker2mqtt.git
 cd moonraker2mqtt
 go mod download
-go build -o moonraker2mqtt ./cmd/main.go
+go build -o moonraker2mqtt ./cmd/moonraker2mqtt
 ```
 
 ## ⚙️ Configuration
@@ -309,7 +309,7 @@ sudo systemctl status moonraker2mqtt
 
 ### Prérequis
 
-- Go 1.24+
+- Go 1.24.4+
 
 ### Configuration de l'environnement de développement
 
@@ -334,32 +334,20 @@ go tool cover -html=coverage.out
 
 ### Structure du projet
 
-```
-moonraker2mqtt/
-├── cmd/                    # Point d'entrée de l'application
-│   ├── main.go
-│   └── main_test.go
-├── config/                 # Gestion de la configuration
-│   ├── config.go
-│   ├── struct.go
-│   └── config_test.go
-├── moonraker/             # Client Moonraker/Klipper
-│   └── client.go
-├── mqtt/                  # Client MQTT
-│   └── paho_client.go
-├── websocket/             # Client WebSocket
-│   ├── client.go
-│   ├── interface.go
-│   ├── message.go
-│   ├── struct.go
-│   ├── retry.go
-│   └── error.go
-├── logger/                # Système de logging
-│   └── logger.go
-├── utils/                 # Utilitaires
-│   └── utils.go
-└── version/               # Informations de version
-    └── version.go
+```text
+cmd/moonraker2mqtt/        # Hosted CLI (Linux, Windows, macOS)
+cmd/moonraker2mqtt-esp32/  # TinyGo ESP32-S3 entrypoint
+bridge/                   # Shared application, topics, polling and commands
+moonraker/                # Shared Moonraker JSON-RPC client
+websocket/                # Shared transport; platform-specific resource limits
+mqtt/interface.go         # Shared MQTT contract
+mqtt/paho.go              # Hosted Paho adapter (!tinygo)
+mqtt/natiu.go             # Firmware natiu adapter (tinygo or local natiu tests)
+config/                   # Portable schemas/helpers; host-only YAML/env/fs loader
+logger/                   # Portable contract/serial writer; host-only file logger
+platform/host/            # Host assembly
+platform/esp32s3/         # Link-time configuration and native Wi-Fi boot
+version/                  # Shared build metadata
 ```
 
 ### Contributions
@@ -374,12 +362,67 @@ moonraker2mqtt/
 
 ```bash
 # Build manuel pour différentes architectures
-GOOS=linux GOARCH=amd64 go build -o moonraker2mqtt-linux-amd64 ./cmd/main.go
-GOOS=linux GOARCH=arm64 go build -o moonraker2mqtt-linux-arm64 ./cmd/main.go
-GOOS=windows GOARCH=amd64 go build -o moonraker2mqtt-windows-amd64.exe ./cmd/main.go
-GOOS=darwin GOARCH=amd64 go build -o moonraker2mqtt-darwin-amd64 ./cmd/main.go
-GOOS=darwin GOARCH=arm64 go build -o moonraker2mqtt-darwin-arm64 ./cmd/main.go
+GOOS=linux GOARCH=amd64 go build -o moonraker2mqtt-linux-amd64 ./cmd/moonraker2mqtt
+GOOS=linux GOARCH=arm64 go build -o moonraker2mqtt-linux-arm64 ./cmd/moonraker2mqtt
+GOOS=windows GOARCH=amd64 go build -o moonraker2mqtt-windows-amd64.exe ./cmd/moonraker2mqtt
+GOOS=darwin GOARCH=amd64 go build -o moonraker2mqtt-darwin-amd64 ./cmd/moonraker2mqtt
+GOOS=darwin GOARCH=arm64 go build -o moonraker2mqtt-darwin-arm64 ./cmd/moonraker2mqtt
 ```
+
+
+### Fondation ESP32-S3 (expérimentale)
+
+La cible Linux conserve YAML/.env, les flags, les logs fichiers, Paho,
+les topics, le polling et les commandes existantes. La cible embarquée
+partage `bridge/`, Moonraker et WebSocket, mais utilise Wi-Fi natif
+`espradio`, logs série et MQTT `natiu-mqtt`. Les dépendances hôte sont
+isolées par `!tinygo`.
+
+```sh
+make test vet build
+./build/moonraker2mqtt -version
+make test-firmware-adapter
+make firmware
+```
+
+Compilation avec `tinygo/tinygo:0.42.0`, cible `esp32s3-generic`.
+Carte visée : Waveshare ESP32-S3 Zero FH4R2 (flash 4 Mo, PSRAM 2 Mo,
+LED RGB GPIO21). Ni PSRAM utilisable ni second cœur ne sont supposés.
+**Compilation vérifiée, pas de validation sur carte ni sur réseau réel.**
+Un firmware compilé sans paramètres s'arrête avec une erreur de configuration.
+
+```sh
+# Valeurs d'exemple uniquement : ne jamais committer de secrets.
+make firmware FIRMWARE_LDFLAGS="-X 'moonraker2mqtt/platform/esp32s3.WiFiSSID=mon-reseau' -X 'moonraker2mqtt/platform/esp32s3.WiFiPassword=exemple' -X 'moonraker2mqtt/platform/esp32s3.MoonrakerHost=192.0.2.10' -X 'moonraker2mqtt/platform/esp32s3.MQTTHost=192.0.2.20'"
+```
+
+Paramètres obligatoires : `WiFiSSID`, `MoonrakerHost`, `MQTTHost`.
+Optionnels : `WiFiPassword`, `MoonrakerPort` (7125), `MoonrakerAPIKey`,
+`MQTTPort` (1883), `MQTTUsername`, `MQTTPassword`, `MQTTClientID`
+(moonraker2mqtt-esp32), `MQTTTopicPrefix` (moonraker), `CommandsEnabled`
+(false), `CallInterval` (5 secondes), `LogLevel` (info). Ces variables sont
+dans `moonraker2mqtt/platform/esp32s3`. `make firmware-local` accepte les
+mêmes flags avec TinyGo installé localement. Les secrets avec caractères
+spéciaux nécessitent un échappement correct des flags.
+
+Les secrets sont intégrés au firmware et peuvent apparaître dans les logs
+ou l'historique de compilation : garder le binaire privé. Les commandes
+imprimante sont désactivées par défaut. Utiliser uniquement un LAN de
+confiance et un broker privé : MQTT TCP et WebSocket `ws://`, sans TLS.
+Pas d'OTA, portail captif, NVS, watchdog ni procédure de flash spécifique.
+
+Limites embarquées : QoS0, 4 abonnements à des topics exacts, payload MQTT
+4096 octets, topics 256 octets, file de 4 commandes entrantes (surplus
+abandonné avec avertissement), file de 4 messages WebSocket, 8 requêtes
+JSON-RPC simultanées et trames entrantes WebSocket 16 Kio. Les publications
+QoS0 ne sont pas réessayées si elles ont potentiellement été livrées.
+Le désabonnement émet UNSUBSCRIBE et retire le handler local sans attendre
+UNSUBACK. Les logs utilisent la sortie série standard TinyGo.
+
+Les reprises Wi-Fi/MQTT/Moonraker, mémoire dynamique et tests longue durée
+restent à valider sur matériel ; la logique de reprise hôte existante n'est
+pas réécrite. Aucun broker ni imprimante réel n'est contacté par les tests.
+`build/firmware.bin` est ignoré par Git et n'est pas ajouté aux releases hôte.
 
 ## 🐛 Dépannage
 

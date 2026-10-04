@@ -32,3 +32,6 @@
 !Dockerfile
 !.dockerignore
 tmp
+# Local host/firmware build artifacts (may embed credentials)
+/build/
+/builds/
