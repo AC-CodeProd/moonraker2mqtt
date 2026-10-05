@@ -32,3 +32,19 @@
 !Dockerfile
 !.dockerignore
 tmp
+# Local host/firmware build artifacts (may embed credentials)
+/build/
+/builds/
+# Firmware safety sources and tooling (keep build artifacts ignored).
+!/platform/esp32s3/settings_hw.c
+!/platform/esp32s3/radio_state.c
+!/targets/esp32s3-settings.ld
+!/targets/esp32s3-settings.json
+!/targets/settings-vectors.S
+!/tools/settings_image.py
+!/tools/settings_target.py
+!/tools/test_settings_target.py
+!/tools/audit_settings.py
+!/docs/ESP32S3_SETUP.md
+!/docs/ESP32S3_MEMORY.md
+!/websocket/wire/lowmem/LICENSE

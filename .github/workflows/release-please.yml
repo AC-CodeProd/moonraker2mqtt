@@ -120,7 +120,7 @@ jobs:
           go build \
             -ldflags="-w -s -X '${PKG_VER}.Version=${{ steps.version.outputs.version }}' -X '${PKG_VER}.BuildDate=$(date -u +%Y-%m-%dT%H:%M:%SZ)' -X '${PKG_VER}.GitCommit=${GITHUB_SHA::8}' -X '${PKG_VER}.GitURL=https://github.com/${{ github.repository }}'" \
             -o "builds/${BINARY_NAME}" \
-            ./cmd/main.go
+            ./cmd/moonraker2mqtt
           
           # Verify the binary
           ls -la builds/

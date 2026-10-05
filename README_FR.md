@@ -1,9 +1,18 @@
 # Moonraker2MQTT
 
-[![Go Version](https://img.shields.io/badge/Go-1.24-blue.svg)](https://golang.org/)
+[![Go Version](https://img.shields.io/badge/Go-1.24.4-blue.svg)](https://golang.org/)
 [![License: GPL-3.0](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 
 Un pont performant et robuste entre Moonraker (Klipper) et MQTT, écrit en Go. Ce projet permet l'intégration transparente de votre imprimante 3D avec des systèmes domotiques comme Home Assistant, Node-RED, ou tout autre système compatible MQTT.
+
+[English](README.md)
+
+## Cibles disponibles
+
+- **Application hôte :** Linux, Windows et macOS ; comportement existant conservé.
+- **Firmware expérimental :** ESP32-S3 avec TinyGo, pour le Waveshare ESP32-S3-Zero. La compilation est vérifiée ; le fonctionnement sur carte reste à valider.
+
+Le portage ESP32-S3 est actuellement sur `feat/esp32s3-platform-structure`, sans fusion dans `main`. Sélectionner cette branche avant de suivre les commandes de compilation ci-dessous. Les instructions YAML, variables d’environnement, logs fichiers et systemd concernent uniquement l’application hôte. Voir [Firmware ESP32-S3](#firmware-esp32-s3-expérimental) pour la configuration embarquée et ses limites. Le [diagnostic mémoire et son correctif](docs/ESP32S3_MEMORY.md) détaillent la fragmentation observée et la qualification en lecture seule d’une heure, sans validation des coupures réseau forcées ni de la charge en impression.
 
 ## 🚀 Fonctionnalités
 
@@ -23,6 +32,7 @@ Un pont performant et robuste entre Moonraker (Klipper) et MQTT, écrit en Go. C
 - [Commandes MQTT](#-commandes-mqtt)
 - [Intégrations](#-intégrations)
 - [Développement](#-développement)
+- [Firmware ESP32-S3](#firmware-esp32-s3-expérimental)
 - [Support](#-support)
 
 ## 🔧 Installation
@@ -41,8 +51,9 @@ sudo mv moonraker2mqtt-*-linux-amd64 /usr/local/bin/moonraker2mqtt
 ```bash
 git clone https://github.com/AC-CodeProd/moonraker2mqtt.git
 cd moonraker2mqtt
+git switch feat/esp32s3-platform-structure
 go mod download
-go build -o moonraker2mqtt ./cmd/main.go
+go build -o moonraker2mqtt ./cmd/moonraker2mqtt
 ```
 
 ## ⚙️ Configuration
@@ -309,13 +320,14 @@ sudo systemctl status moonraker2mqtt
 
 ### Prérequis
 
-- Go 1.24+
+- Go 1.24.4+
 
 ### Configuration de l'environnement de développement
 
 ```bash
 git clone https://github.com/AC-CodeProd/moonraker2mqtt.git
 cd moonraker2mqtt
+git switch feat/esp32s3-platform-structure
 
 # Installation des dépendances
 go mod download
@@ -334,32 +346,21 @@ go tool cover -html=coverage.out
 
 ### Structure du projet
 
-```
-moonraker2mqtt/
-├── cmd/                    # Point d'entrée de l'application
-│   ├── main.go
-│   └── main_test.go
-├── config/                 # Gestion de la configuration
-│   ├── config.go
-│   ├── struct.go
-│   └── config_test.go
-├── moonraker/             # Client Moonraker/Klipper
-│   └── client.go
-├── mqtt/                  # Client MQTT
-│   └── paho_client.go
-├── websocket/             # Client WebSocket
-│   ├── client.go
-│   ├── interface.go
-│   ├── message.go
-│   ├── struct.go
-│   ├── retry.go
-│   └── error.go
-├── logger/                # Système de logging
-│   └── logger.go
-├── utils/                 # Utilitaires
-│   └── utils.go
-└── version/               # Informations de version
-    └── version.go
+```text
+cmd/moonraker2mqtt/        # Application hôte (Linux, Windows, macOS)
+cmd/moonraker2mqtt-esp32/  # Point d’entrée TinyGo ESP32-S3
+bridge/                   # Logique commune : topics, surveillance et commandes
+moonraker/                # Client JSON-RPC Moonraker partagé
+websocket/                # Transport partagé et limites propres à chaque cible
+mqtt/interface.go         # Contrat MQTT commun
+mqtt/paho.go              # Adaptateur Paho pour l’hôte (!tinygo)
+mqtt/natiu.go             # Adaptateur natiu pour le firmware et les tests locaux
+config/                   # Configuration portable ; chargement YAML/env côté hôte
+logger/                   # Interface et logs série ; logs fichiers côté hôte
+platform/host/            # Assemblage de l’application hôte
+platform/esp32s3/         # Configuration à la compilation et démarrage Wi-Fi
+utils/                    # Utilitaires de l’application hôte
+version/                  # Métadonnées de compilation communes
 ```
 
 ### Contributions
@@ -374,12 +375,126 @@ moonraker2mqtt/
 
 ```bash
 # Build manuel pour différentes architectures
-GOOS=linux GOARCH=amd64 go build -o moonraker2mqtt-linux-amd64 ./cmd/main.go
-GOOS=linux GOARCH=arm64 go build -o moonraker2mqtt-linux-arm64 ./cmd/main.go
-GOOS=windows GOARCH=amd64 go build -o moonraker2mqtt-windows-amd64.exe ./cmd/main.go
-GOOS=darwin GOARCH=amd64 go build -o moonraker2mqtt-darwin-amd64 ./cmd/main.go
-GOOS=darwin GOARCH=arm64 go build -o moonraker2mqtt-darwin-arm64 ./cmd/main.go
+GOOS=linux GOARCH=amd64 go build -o moonraker2mqtt-linux-amd64 ./cmd/moonraker2mqtt
+GOOS=linux GOARCH=arm64 go build -o moonraker2mqtt-linux-arm64 ./cmd/moonraker2mqtt
+GOOS=windows GOARCH=amd64 go build -o moonraker2mqtt-windows-amd64.exe ./cmd/moonraker2mqtt
+GOOS=darwin GOARCH=amd64 go build -o moonraker2mqtt-darwin-amd64 ./cmd/moonraker2mqtt
+GOOS=darwin GOARCH=arm64 go build -o moonraker2mqtt-darwin-arm64 ./cmd/moonraker2mqtt
 ```
+
+
+## Firmware ESP32-S3 (expérimental)
+
+### Prérequis
+
+- Waveshare ESP32-S3-Zero (ESP32-S3FH4R2), câble USB-C de données et réseau Wi-Fi 2,4 GHz de confiance.
+- Moonraker et un broker MQTT privé accessibles depuis la carte ; utiliser leurs adresses réseau, pas `localhost`.
+- Go 1.24.4+ et Make ; Docker pour `make firmware`, ou TinyGo 0.42.0 installé localement pour `make firmware-local`.
+- Le firmware se compile séparément et n’est pas inclus dans les releases GitHub de l’application hôte.
+
+### Compilation et configuration
+
+L’application Linux/Windows/macOS garde sa configuration, ses flags, Paho,
+les logs, topics et commandes existants. Le firmware S3 ajoute une page de
+configuration française hors ligne et un stockage à deux slots. **Tests hôte
+et compilation validés ; nouveau parcours portail/sauvegarde/redémarrage non
+encore validé sur la carte.**
+
+```sh
+make test vet build
+make test-firmware-adapter
+# Exemple uniquement : choisir un mot de passe WPA2 unique.
+make firmware FIRMWARE_LDFLAGS="-X moonraker2mqtt/platform/esp32s3.SetupPassword=remplacer-par-un-secret-unique"
+```
+
+TinyGo reste fixé à `tinygo/tinygo:0.42.0`. La cible personnalisée
+`targets/esp32s3-settings.json` hérite de `esp32s3-supermini` pour la console USB
+et réserve explicitement la mémoire interne de cette carte S3 rev0.2/XMC 4Mio.
+`firmware-local` génère les chemins adaptés à une installation locale TinyGo.
+Les deux règles respectent `TINYGO_TARGET`, par exemple
+`make firmware-local TINYGO_TARGET=/chemin/absolu/custom-settings.json`.
+Seule la cible de paramètres par défaut est adaptée en `build/local-target.json` ;
+une cible personnalisée explicite est transmise sans modification. Elle doit
+conserver le linker S3 en RAM interne, les vecteurs IRAM, la réservation RTC
+NOLOAD et les deux secteurs de paramètres. Les cibles génériques sans ces
+réservations ne sont **pas prises en charge**. Dans Docker, le chemin doit être
+accessible dans le conteneur (normalement sous `/src`). Le contrôle d’image et
+l’en-tête 4Mio restent actifs dans les deux règles.
+Ni PSRAM utilisable, second cœur, LED ni driver flash S3 générique ne sont supposés.
+
+Sans paramètres enregistrés ni configuration `-X` valide, rejoindre
+`Moonraker-Setup` avec le mot de passe WPA2 unique de compilation, puis ouvrir
+explicitement `http://192.168.4.1`. DHCP est actif ; pas de DNS captif automatique.
+Le formulaire couvre Wi-Fi, hôte/port/clé API Moonraker, hôte/port/authentification
+MQTT, identifiant client, préfixe des topics, polling et commandes optionnelles.
+Les secrets passent dans un POST JSON borné, jamais dans une URL. Aucun serveur
+d’administration sur le LAN ni restitution des secrets enregistrés.
+
+**Sauvegarder = préparer en RAM RTC → redémarrer → écrire avant initialisation
+radio**, jamais écrire la flash pendant le Wi-Fi. HTTP 202 signifie « préparé »,
+pas « durable ». Le démarrage suivant affiche `SETTINGS: durable record loaded`
+après vérification CRC et relecture. Les paramètres persistants remplacent les
+anciens paramètres `-X` optionnels (`WiFiSSID`, `MoonrakerHost`, `MQTTHost`, etc.).
+Sans mot de passe de portail, refus de démarrer un AP ouvert. Une recompilation
+avec `ForceSetup=true` permet de revenir explicitement au portail sans effacer
+les paramètres existants.
+**Ce flag est permanent, pas à usage unique :** après sauvegarde, chaque reboot
+revient encore au portail. Pour reprendre le pont, recompiler et réinstaller avec
+`-X moonraker2mqtt/platform/esp32s3.ForceSetup=false` (ou omettre le flag), en
+préservant les secteurs de paramètres pendant le remplacement du firmware.
+
+Un stockage corrompu, une version inconnue ou des générations ambiguës bloquent
+la sauvegarde normale (HTTP 409) et proposent une réparation distincte. Saisir
+les paramètres de remplacement, cocher la confirmation d’effacement des deux
+secteurs puis confirmer le dialogue du navigateur. Le POST `/repair`, authentifié
+et borné, prépare une opération protégée par CRC ; seuls les deux secteurs
+réservés sont effacés/réinitialisés au démarrage suivant. **Une version inconnue
+n’est effacée qu’après cette confirmation.** Sauvegarder les preuves si nécessaire.
+Les erreurs d’E/S ou de relecture n’autorisent pas la réparation : diagnostiquer
+le stockage. HTTP 202 ne prouve pas la durabilité ; une réparation interrompue
+peut perdre les deux anciens enregistrements. Aucun effacement ni nouvel essai
+automatique.
+
+### État de validation et limites
+
+Portail non configuré + pont complet : **1 297 447 octets de flash et 158 620
+octets de RAM statique**. Configuration avec commandes actives : **1 297 899
+octets de flash et 158 740 octets de RAM statique**. Hors allocations dynamiques
+et piles. Les deux parcours restent compilés même sans identifiants réseau.
+
+Deux secteurs de 4Kio sont réservés dans `[0x1fe000, 0x200000)`, volontairement
+sous la géométrie ROM par défaut de 2Mio sur la vraie flash de 4Mio. Le linker
+refuse le chevauchement de l’image ; aucun changement aveugle de géométrie.
+La préparation RTC est `NOLOAD`, hors segments de l’image et effacement BSS.
+C’est une preuve de placement statique, **pas encore un essai de rétention lors
+d’un reset physique**. Avant tout accès, le driver vérifie puce/révision,
+callbacks ROM, sécurité, cœur1 en reset et absence de mappings PSRAM. Tous les
+accès flash sont définitivement bloqués pour ce démarrage avant la radio.
+Wrapper et vecteurs d’exception temporaires utilisent uniquement IRAM/ROM.
+
+Voir [sécurité, preuves et autorisation matériel](docs/ESP32S3_SETUP.md) avant
+flashage. Autorisation explicite requise pour installer le nouveau candidat et
+qualifier erase/program des secteurs de paramètres. Ni effacement complet ni
+changement d’eFuse. L’avertissement SHA ROM indépendant reste déclaré, sans
+prétendre le corriger ici.
+
+MQTT TCP et `ws://` sans TLS ; QoS0 ; 4 abonnements exacts, payload MQTT 4096
+octets, topics 256 octets, 4 commandes en file, 4 messages WebSocket en file,
+8 requêtes JSON-RPC simultanées et trames WebSocket de 16Kio. Pas d’OTA, de
+DNS captif automatique ni de qualification watchdog. L’initialisation Wi-Fi
+n’est tentée qu’une fois par démarrage ; les échecs association/DHCP sont retentés
+avec attente de 5–30 secondes, puis portail de secours après six échecs sans
+effacer les paramètres. Deux emplacements TCP simultanés sont réservés à MQTT
+et Moonraker ; la pompe réseau est jointe avant remplacement d’une pile ayant
+échoué avant le bridge. Une perte d’association annule le bridge puis provoque
+un redémarrage logiciel, au lieu de réutiliser les descripteurs alors que des
+workers WebSocket peuvent subsister. Ce reset annule le RTC en attente et
+préserve les paramètres durables. Tests de régression, deux sockets lneto réels
+en mémoire et compilation avec le pilote épinglé passent ; reprise sur carte,
+mémoire dynamique et tests prolongés restent non qualifiés. Aucun broker ni
+imprimante de production contacté. Secrets en clair dans les artefacts et la
+flash : garder les binaires privés et utiliser un LAN de confiance. Les limites
+Linux ne changent pas.
 
 ## 🐛 Dépannage
 
