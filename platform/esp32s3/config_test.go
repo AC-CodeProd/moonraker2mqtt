@@ -1,6 +1,29 @@
 package esp32s3
 
-import "testing"
+import (
+	"moonraker2mqtt/config"
+	"testing"
+)
+
+func TestQualificationSafetyOverridesLoadedCommandsWithoutChangingNormalMode(t *testing.T) {
+	old := QualificationReadOnly
+	defer func() { QualificationReadOnly = old }()
+	for _, mode := range []string{"true", "false", "invalid"} {
+		cfg := config.DefaultConfig()
+		cfg.MQTT.CommandsEnabled = true // Model the durable record override.
+		QualificationReadOnly = mode
+		err := applyQualificationSafety(cfg)
+		if mode == "invalid" {
+			if err == nil {
+				t.Fatal("invalid qualification mode accepted")
+			}
+			continue
+		}
+		if err != nil || cfg.MQTT.CommandsEnabled != (mode == "false") {
+			t.Fatal(mode, err, cfg.MQTT.CommandsEnabled)
+		}
+	}
+}
 
 func TestFirmwareConfig(t *testing.T) {
 	oldSSID, oldMoon, oldMQTT := WiFiSSID, MoonrakerHost, MQTTHost

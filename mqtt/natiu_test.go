@@ -158,6 +158,34 @@ func regressionClient(t *testing.T, broker func(net.Conn)) *NatiuClient {
 	return c
 }
 
+func TestNatiuUnsolicitedSubackIsRejectedAndShutdownJoins(t *testing.T) {
+	c := regressionClient(t, func(b net.Conn) {
+		r := bufio.NewReader(b)
+		if _, err := readPacket(r); err != nil {
+			return
+		}
+		b.SetDeadline(time.Now().Add(2 * time.Second))
+		if _, err := b.Write([]byte{0x20, 2, 0, 0}); err != nil {
+			return
+		}
+		// Pinned natiu rejects this before the adapter queues an acknowledgement:
+		// one return code does not match zero pending subscription filters.
+		b.Write([]byte{0x90, 3, 0, 1, 0})
+		readPacket(r)
+	})
+	select {
+	case <-c.done:
+	case <-time.After(time.Second):
+		t.Fatal("unsolicited SUBACK did not stop the native receive loop")
+	}
+	if c.IsConnected() || len(c.subacks) != 0 {
+		t.Fatal("unsolicited acknowledgement accepted")
+	}
+	if err := c.Disconnect(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestNatiuPublishAfterNearDeadlineIdle(t *testing.T) {
 	received := make(chan incoming, 1)
 	brokerErr := make(chan error, 1)

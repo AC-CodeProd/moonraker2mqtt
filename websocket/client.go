@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	"golang.org/x/net/websocket"
+	websocket "moonraker2mqtt/websocket/wire"
 
 	"moonraker2mqtt/config"
 	"moonraker2mqtt/logger"

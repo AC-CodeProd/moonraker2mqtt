@@ -21,9 +21,24 @@ var (
 	MQTTClientID    = "moonraker2mqtt-esp32"
 	MQTTTopicPrefix = "moonraker"
 	CommandsEnabled = "false"
-	CallInterval    = "5"
-	LogLevel        = "info"
+	// QualificationReadOnly inhibits commands and all settings writes, including
+	// pending boot operations. It is an image flag, never a stored-setting edit.
+	QualificationReadOnly = "false"
+	CallInterval          = "5"
+	LogLevel              = "info"
 )
+
+func applyQualificationSafety(cfg *config.Config) error {
+	switch QualificationReadOnly {
+	case "false":
+		return nil
+	case "true":
+		cfg.MQTT.CommandsEnabled = false
+		return nil
+	default:
+		return fmt.Errorf("invalid qualification safety mode")
+	}
+}
 
 func Config() (*config.Config, error) {
 	if WiFiSSID == "" {

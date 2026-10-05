@@ -7,46 +7,102 @@ import (
 	"moonraker2mqtt/bridge"
 	"moonraker2mqtt/logger"
 	"moonraker2mqtt/mqtt"
+	"moonraker2mqtt/platform/esp32s3/network"
+	"moonraker2mqtt/platform/esp32s3/store"
 	"os"
 	"time"
 	"tinygo.org/x/drivers/netdev"
 	nl "tinygo.org/x/drivers/netlink"
-	link "tinygo.org/x/espradio/netlink"
 )
 
-// Run boots the native ESP32-S3 radio before any shared network clients.
-// A failed session is retried, but radio recovery and long-running stability
-// still require hardware validation.
+// Run owns radio state. No flash access is possible once any radio starts.
 func Run() {
+	println("BOOT: settings begin (boot-only commit/read)")
+	settings, savedErr := bootSettings()
+	println("BOOT: settings complete")
+	sealBootFlash()
+	println("BOOT: flash sealed")
+	memorySnapshot("settings")
 	time.Sleep(3 * time.Second)
 	log := logger.NewSerial(os.Stdout, logger.ParseLogLevel(LogLevel))
 	cfg, err := Config()
-	if err != nil {
-		log.Error("Firmware configuration: %v", err)
-		for {
-			time.Sleep(time.Minute)
-		}
+	ssid, password := WiFiSSID, WiFiPassword
+	if savedErr == nil {
+		cfg = settings.Config()
+		err = cfg.Validate()
+		ssid, password = settings.SSID, settings.WiFiPassword
+		println("SETTINGS: durable record loaded")
 	}
-	radio := &link.Esplink{}
+	if err == nil {
+		err = applyQualificationSafety(cfg) // Apply AFTER durable settings override.
+	}
+	if QualificationReadOnly == "true" {
+		println("QUALIFICATION: commands inhibited; settings writes disabled")
+	}
+	radio := newRadioLink()
 	netdev.UseNetdev(radio)
+	setupMode := func() {
+		println("SETUP: entering recovery; durable settings preserved")
+		if e := runPortal(radio, savedErr); e != nil {
+			log.Error("Setup portal unavailable; reset or rebuild required")
+		}
+		safeIdle()
+	}
+	if ForceSetup == "true" || (savedErr != nil && savedErr != store.ErrMissing) || err != nil {
+		setupMode()
+		return
+	}
+	failures := 0
 	for {
-		if err := radio.NetConnect(&nl.ConnectParams{Ssid: WiFiSSID, Passphrase: WiFiPassword}); err != nil {
-			log.Warn("Wi-Fi connection failed: %v", err)
-			time.Sleep(5 * time.Second)
+		println("BOOT: station connection begin")
+		memorySnapshot("pre-radio")
+		if err := radio.NetConnect(&nl.ConnectParams{Ssid: ssid, Passphrase: password}); err != nil {
+			// Lifecycle returns only fixed stage names, never the driver's error text.
+			log.Warn("Wi-Fi unavailable: %v", err)
+			if err == network.ErrEnable || err == network.ErrShutdown {
+				log.Error("Radio recovery unsafe; reset required, settings preserved")
+				safeIdle()
+			}
+			failures++
+			if failures >= 6 {
+				setupMode()
+				return
+			}
+			time.Sleep(network.Backoff(failures))
 			continue
 		}
-		log.Info("Wi-Fi connected")
-		break
-	}
-	for {
+		failures = 0
+		log.Info("Wi-Fi association and DHCP complete")
+		memorySnapshot("wifi")
 		client := mqtt.NewNatiuClient(cfg.MQTT, log)
 		app := bridge.New(cfg, client, log)
-		if err := app.Run(context.Background()); err != nil {
-			log.Error("Bridge stopped: %v", err)
+		memorySnapshot("client-init")
+		err := network.Session(context.Background(), func() bool {
+			memoryHeartbeat()
+			return radio.connected()
+		}, func(ctx context.Context) error {
+			defer client.Disconnect() // Covers partial MQTT Connect failure as well.
+			return app.Run(ctx)
+		}, 250*time.Millisecond, 10*time.Second)
+		if err == network.ErrShutdown {
+			log.Error("Bridge shutdown timed out; reset required before network reuse")
+			cancelPending() // An unrelated recovery reset must not commit RTC data.
+			rebootSave()
 		}
-		if err := client.Disconnect(); err != nil {
-			log.Warn("MQTT cleanup: %v", err)
-		}
-		time.Sleep(5 * time.Second)
+		// The shared WebSocket client starts an uncancellable DialConfig worker
+		// and does not join every reconnect/monitor worker at Disconnect. Do not
+		// replace its descriptor table/stack in this boot, even when Run returns.
+		// Recovery is a bounded software reset, preserving durable settings and
+		// invalidating RTC pending data, rather than overlapping old/new clients.
+		log.Warn("Bridge session ended; recovery reset after bounded backoff")
+		time.Sleep(network.Backoff(1))
+		cancelPending()
+		rebootSave()
+	}
+}
+
+func safeIdle() {
+	for {
+		time.Sleep(time.Minute)
 	}
 }

@@ -9,12 +9,25 @@ import (
 	"moonraker2mqtt/moonraker"
 	"moonraker2mqtt/mqtt"
 	"moonraker2mqtt/version"
+	"moonraker2mqtt/websocket"
 	"time"
 )
 
+// moonrakerAdapter is the protocol boundary used by the bridge and local tests.
+type moonrakerAdapter interface {
+	Connect(context.Context) error
+	Disconnect() error
+	IsConnected() bool
+	HandleCommand(string, []byte)
+	GetServerInfo(context.Context) (*websocket.ServerInfo, error)
+	GetHostInfo(context.Context) (*websocket.PrinterInfo, error)
+	GetKlippyState(context.Context) (string, error)
+	QueryObjects(context.Context, map[string]any) (map[string]any, error)
+}
+
 type App struct {
 	config          *config.Config
-	moonrakerClient *moonraker.Client
+	moonrakerClient moonrakerAdapter
 	mqttClient      mqtt.MQTTClient
 	logger          logger.Logger
 }
@@ -119,11 +132,18 @@ func (a *App) Run(ctx context.Context) error {
 		}
 	}
 
-	go a.periodicMonitoring(ctx)
+	if endSessionOnDisconnect {
+		// Return through both deferred Disconnect calls before supervision
+		// can reset; do not leave Run blocked on a still-healthy Wi-Fi ctx.
+		err := a.periodicMonitoring(ctx)
+		a.logger.Info("Shutting down...")
+		return err
+	}
 
+	// Preserve hosted reconnection and context-driven shutdown behavior.
+	go a.periodicMonitoring(ctx)
 	<-ctx.Done()
 	a.logger.Info("Shutting down...")
-
 	return nil
 }
 
@@ -161,9 +181,9 @@ func (a *App) publishInitialInfo(ctx context.Context) error {
 	return nil
 }
 
-func (a *App) periodicMonitoring(ctx context.Context) {
+func (a *App) periodicMonitoring(ctx context.Context) error {
 	ticker := time.NewTicker(time.Duration(a.config.Moonraker.CallInterval) * time.Second)
-	defer ticker.Stop()
+	defer func() { ticker.Stop() }()
 
 	consecutiveErrors := 0
 	maxConsecutiveErrors := 5
@@ -173,10 +193,21 @@ func (a *App) periodicMonitoring(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
-			return
+			return nil
 		case <-ticker.C:
 			mqttConnected := a.mqttClient.IsConnected()
 			moonrakerConnected := a.moonrakerClient.IsConnected()
+
+			// Reconnecting allocates fresh goroutine stacks. On the MCU, end
+			// this session before either Connect can touch a fragmented heap.
+			if endSessionOnDisconnect {
+				if !mqttConnected {
+					return fmt.Errorf("MQTT disconnected; session recovery required")
+				}
+				if !moonrakerConnected {
+					return fmt.Errorf("Moonraker disconnected; session recovery required")
+				}
+			}
 
 			if !moonrakerConnected && time.Since(lastReconnectAttempt) > reconnectCooldown {
 				a.logger.Warn("Moonraker disconnected, attempting reconnection...")
