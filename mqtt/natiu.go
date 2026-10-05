@@ -65,6 +65,7 @@ type packetConn struct {
 	packetDeadline time.Time
 	prefix         [8]byte // maximum fixed header (5) plus single-topic SUBACK (3)
 	prefixLen      int
+	packetBytes    uint32 // diagnostic count, owned by the decoder goroutine
 }
 
 // beginReceive separates idle polling from packet completion. The native
@@ -73,6 +74,7 @@ func (c *packetConn) beginReceive() {
 	c.receive = true
 	c.packetDeadline = time.Time{}
 	c.prefixLen = 0
+	c.packetBytes = 0
 	c.Conn.SetReadDeadline(time.Now().Add(receiveIdleTimeout))
 }
 
@@ -89,6 +91,7 @@ func (c *packetConn) Read(p []byte) (int, error) {
 	}
 	n, err := c.Conn.Read(p)
 	if n > 0 {
+		c.packetBytes += uint32(n)
 		if c.packetDeadline.IsZero() {
 			c.packetDeadline = time.Now().Add(receivePacketTimeout)
 		}
@@ -216,28 +219,41 @@ func (c *NatiuClient) readLoop(client *native.Client, wire *packetConn, queue ch
 	}()
 	lastPing := time.Now()
 	pingAt := time.Time{}
+	var pingBytes, pingPackets uint32
+	var lastPacketType byte
 	for client.IsConnected() {
 		wire.beginReceive()
 		if err := client.HandleNext(); err != nil {
-			c.log.Warn("MQTT receive stopped: %v", err)
+			c.log.Warn("MQTT receive stopped: %v (packet_bytes=%d)", err, wire.packetBytes)
 			break
+		}
+		if !pingAt.IsZero() && wire.packetBytes > 0 {
+			pingBytes += wire.packetBytes
+			pingPackets++
+			lastPacketType = wire.prefix[0] >> 4
 		}
 		if ack, ok := wire.suback(); ok {
 			c.subacks <- ack
 		}
 		if !pingAt.IsZero() && !client.AwaitingPingresp() {
+			c.log.Debug("MQTT PINGRESP decoded: wait_ms=%d", time.Since(pingAt).Milliseconds())
 			pingAt = time.Time{}
 		}
 		if !pingAt.IsZero() && time.Since(pingAt) > 10*time.Second {
-			c.log.Warn("MQTT ping timeout")
+			// Counts describe what this decoder received, not whether the
+			// broker sent a response or whether TCP acknowledged the request.
+			c.log.Warn("MQTT ping timeout: wait_ms=%d rx_bytes=%d rx_packets=%d last_type=%d", time.Since(pingAt).Milliseconds(), pingBytes, pingPackets, lastPacketType)
 			break
 		}
 		if time.Since(lastPing) >= 20*time.Second {
 			if err := client.StartPing(); err != nil {
+				c.log.Warn("MQTT PINGREQ write failed: %v", err)
 				break
 			}
 			lastPing = time.Now()
 			pingAt = lastPing
+			pingBytes, pingPackets, lastPacketType = 0, 0, 0
+			c.log.Debug("MQTT PINGREQ write completed")
 		}
 	}
 	if client.IsConnected() {

@@ -396,65 +396,99 @@ GOOS=darwin GOARCH=arm64 go build -o moonraker2mqtt-darwin-arm64 ./cmd/moonraker
 
 ### Build and configuration
 
-The hosted application retains its YAML/.env loader, flags, file logging,
-Paho adapter, polling, topics and command behavior. Firmware reuses the bridge
-and Moonraker/WebSocket client, with native Wi-Fi (`espradio`), serial logging
-and a bounded `natiu-mqtt` MQTT 3.1.1 adapter. It does **not** import Paho,
-Gorilla WebSocket, YAML/dotenv or the host filesystem logger.
+The Linux/Windows/macOS configuration, flags, Paho adapter, logs, topics and
+commands are unchanged. The experimental S3 firmware now includes an offline
+French setup page and a two-slot settings store; **host tests and compilation
+pass, but the new portal/save/reboot path has not yet been tested on-device**.
 
 ```sh
 make test vet build
-./build/moonraker2mqtt -version
 make test-firmware-adapter
-# Compile-only firmware, with empty credentials: boot rejects missing settings.
-make firmware
+# Example only: use a unique WPA2 setup password, not this shared example.
+make firmware FIRMWARE_LDFLAGS="-X moonraker2mqtt/platform/esp32s3.SetupPassword=replace-with-unique-password"
 ```
 
-Pinned compiler: `tinygo/tinygo:0.42.0`; target: `esp32s3-generic`.
-The intended board is Waveshare ESP32-S3 Zero (FH4R2, 4 MB flash, 2 MB
-PSRAM, GPIO21 RGB LED). This foundation does not assume PSRAM availability,
-use the second core, drive the LED, or select `esp32s3-supermini`.
-The compiler/build is validated, **not the board or live network path**.
+TinyGo is pinned to `tinygo/tinygo:0.42.0`. The custom
+`targets/esp32s3-settings.json` inherits `esp32s3-supermini` for the USB console,
+with an explicit internal-RAM-only linker layout for this S3 rev0.2/XMC 4MiB
+board. `firmware-local` generates paths for a local TinyGo installation.
+Both build rules honor `TINYGO_TARGET`: for example,
+`make firmware-local TINYGO_TARGET=/absolute/path/custom-settings.json`.
+Only the default settings target is translated to `build/local-target.json`;
+an explicit custom target is passed through unchanged. Custom targets must keep
+the S3 internal-RAM linker/IRAM vectors, RTC NOLOAD reservation and both settings
+sectors intact; generic targets without those reservations are **not supported**.
+Docker target paths must exist inside the container (normally under `/src`).
+The image check/4MiB header remains enabled for both rules.
+No PSRAM, second CPU, LED or generic S3 flash support is assumed.
 
-Supply settings via TinyGo link-time strings (package
-`moonraker2mqtt/platform/esp32s3`). A local compiler can use the same flags
-with `make firmware-local`:
+Without saved settings or valid link-time fallback settings, join
+`Moonraker-Setup` using the build's unique WPA2 password, then explicitly open
+`http://192.168.4.1`. DHCP is enabled; automatic captive DNS is not implemented.
+The form covers Wi-Fi, Moonraker host/port/API key, MQTT host/port/authentication,
+client ID, topic prefix, polling and opt-in commands. It sends secrets only in a
+bounded JSON POST; there is no LAN administration server or secret readback.
 
-```sh
-# Example values only: never commit real credentials or firmware containing them.
-make firmware FIRMWARE_LDFLAGS="-X 'moonraker2mqtt/platform/esp32s3.WiFiSSID=my-network' -X 'moonraker2mqtt/platform/esp32s3.WiFiPassword=example-only' -X 'moonraker2mqtt/platform/esp32s3.MoonrakerHost=192.0.2.10' -X 'moonraker2mqtt/platform/esp32s3.MQTTHost=192.0.2.20'"
-```
+**Save means stage → reboot → commit before radio initialization**, not flash
+writes while Wi-Fi runs. HTTP 202 means pending, not durable. The next boot
+prints `SETTINGS: durable record loaded` only after CRC validation/readback.
+Stored settings override the existing optional `-X` settings (`WiFiSSID`,
+`WiFiPassword`, `MoonrakerHost`, `MQTTHost`, etc.). A missing setup password
+fails closed instead of creating an open AP. `ForceSetup=true` can be supplied
+at build time for explicit recovery without erasing existing records.
+**This flag is permanent, not one-shot:** saving still returns to the portal on
+every reboot. To resume the bridge, rebuild and reinstall with
+`-X moonraker2mqtt/platform/esp32s3.ForceSetup=false` (or omit the flag); preserve
+the settings sectors when replacing firmware.
 
-Required: `WiFiSSID`, `MoonrakerHost`, `MQTTHost`. `WiFiPassword` may be
-empty for an open network. Optional: `MoonrakerPort` (7125), `MoonrakerAPIKey`,
-`MQTTPort` (1883), `MQTTUsername`, `MQTTPassword`, `MQTTClientID`
-(moonraker2mqtt-esp32), `MQTTTopicPrefix` (moonraker), `CommandsEnabled`
-(false), `CallInterval` (5 seconds), `LogLevel` (info).
-Commands are disabled by default; enabling them permits printer control.
-Firmware and build logs/command history can expose embedded credentials.
-Treat the resulting binary as a secret; use a private broker/trusted LAN.
-Complex quoting in secrets requires correctly escaped linker flags; no
-runtime environment/YAML/flash configuration is provided.
+Corrupt, unsupported-version or ambiguous storage blocks normal saves (HTTP 409)
+and offers a separate repair. To discard those records, fill in replacement
+settings, check the explicit two-sector erase confirmation and confirm the
+browser dialog. The authenticated bounded `/repair` POST stages a CRC-covered
+repair operation; only the next boot erases/reinitializes the two reserved
+settings slots. **Unknown versions are erased only with that confirmation.**
+Back up evidence first if needed. I/O/readback failures do not authorize repair;
+diagnose the storage instead. HTTP 202 is still not a durability claim, and an
+interrupted repair may lose both old records; no automatic repair/retry occurs.
 
 ### Validation status and limits
 
-A configured TinyGo 0.42.0 build with commands enabled uses **1,270,975 bytes of flash** and **154,876 bytes of static RAM**. These figures exclude dynamic allocations and runtime stack usage. Measure with representative nonempty settings: a build that rejects empty settings at startup can eliminate most of the application.
+Unconfigured portal + full bridge: **1,297,447 bytes flash, 158,620 bytes static
+RAM**. Configured build with commands enabled: **1,297,899 bytes flash,
+158,740 bytes static RAM**. These exclude dynamic allocations and runtime
+stacks. Both paths remain linked, so an empty configuration no longer produces
+an artificially tiny build.
 
-Before using the bridge, on-device acceptance must cover boot, Wi-Fi association, MQTT/WebSocket connection, status publication, command delivery, independent disconnections and extended runtime. No flashing procedure has been validated on the board yet.
+The two 4KiB settings sectors are `[0x1fe000, 0x200000)`, intentionally inside
+the ROM's default 2MiB geometry on the actual 4MiB chip. The linker rejects image
+overlap; no blind geometry patch is applied. RTC pending data is `NOLOAD` and is
+excluded from image segments/BSS clearing. This is a statically checked layout,
+**not yet proof of retained data across a physical reset**. The boot driver
+checks chip/revision, legacy callback defaults, security state, core1 reset and
+absence of PSRAM mappings; all flash access is sealed before starting radio.
+Its cache-off wrapper and temporary exception vectors are IRAM/ROM-only.
 
-Limits: plain TCP MQTT and `ws://` only, MQTT QoS0, exact-topic subscriptions
-(maximum 4), MQTT payloads up to 4096 bytes, topic strings up to 256 bytes,
-4 queued incoming commands (overflow drops with a warning), 4 queued
-WebSocket messages, 8 pending JSON-RPC requests, 16 KiB incoming WebSocket
-frames. Oversized MQTT messages fail rather than pretending to publish;
-QoS0 publishes do not retry potentially delivered messages. UNSUBSCRIBE is
-sent to the broker and removes the local handler without waiting for UNSUBACK.
-The serial console uses TinyGo's target standard output. No OTA, captive
-portal, NVS persistence, TLS, watchdog or hardware-specific flashing automation
-is included. Existing host reconnection logic is reused; independent Wi-Fi,
-broker and printer reconnects, memory behavior and long soak tests remain
-hardware acceptance gates. No live printer/broker is contacted by local tests.
-`build/firmware.bin` is ignored by Git and is not added to hosted release assets.
+See [setup safety, evidence and hardware gate](docs/ESP32S3_SETUP.md) before
+flashing. New firmware flashing and settings erase/program tests require
+explicit authorization; no full-chip erase or eFuse change is provided. The
+existing independent ROM SHA warning remains disclosed, not fixed by this work.
+
+Plain TCP MQTT and `ws://` only; QoS0; at most 4 exact-topic subscriptions,
+4096-byte MQTT payloads, 256-byte topics, 4 queued incoming commands, 4 queued
+WebSocket messages, 8 pending JSON-RPC requests and 16KiB incoming WebSocket
+frames. No TLS, OTA, automatic captive discovery or watchdog qualification.
+Wi-Fi initialization is attempted once per boot; association/DHCP failures are
+retried with 5–30 second backoff and recovery setup after six failures, without
+erasing settings. The local adapter reserves two simultaneous TCP slots for MQTT
+and Moonraker and joins the packet pump before replacing a failed pre-bridge
+stack. Association loss cancels the bridge; recovery uses a software reset rather
+than reusing a descriptor table while WebSocket workers may still exist. This
+reset cancels pending RTC data and preserves durable settings. These paths and
+two real in-memory lneto sockets are regression-tested and the adapter compiles
+with the pinned driver; on-device recovery and long-running memory behavior
+remain unqualified. No production printer or broker was contacted by tests.
+Firmware and stored records contain plaintext secrets; keep build artifacts
+private and use a trusted LAN/broker. Linux limits remain unchanged.
 
 ## 🐛 Troubleshooting
 

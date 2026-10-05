@@ -1,8 +1,8 @@
-//go:build !tinygo
+//go:build !tinygo && !lowmem
 
 package websocket
 
-import "golang.org/x/net/websocket"
+import websocket "moonraker2mqtt/websocket/wire"
 
 const sendQueueSize = 100
 const maxPendingRequests = 0                   // Preserve the hosted client's existing behavior.
