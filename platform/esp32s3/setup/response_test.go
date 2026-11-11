@@ -55,7 +55,7 @@ func peerSegment(t *testing.T, c *tcp.Conn, seq, ack tcp.Value, flags tcp.Flags,
 	f.SetOffsetAndFlags(5, flags)
 	f.SetWindowSize(4096)
 	copy(b[40:], data)
-	if err := c.Demux(b, 20); err != nil && !(flags&tcp.FlagRST != 0 && err == net.ErrClosed) {
+	if err := c.Demux(b, 20); err != nil && (flags&tcp.FlagRST == 0 || err != net.ErrClosed) {
 		t.Fatal(err)
 	}
 }

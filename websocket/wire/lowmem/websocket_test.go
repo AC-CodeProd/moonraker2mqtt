@@ -403,6 +403,9 @@ func TestSmallBuffer(t *testing.T) {
 	if err != nil {
 		t.Errorf("Read: %v", err)
 	}
+	if n != len(small_msg) {
+		t.Fatalf("Read: expected %d bytes, got %d", len(small_msg), n)
+	}
 	if !bytes.Equal(msg[:len(small_msg)], small_msg) {
 		t.Errorf("Echo: expected %q got %q", msg[:len(small_msg)], small_msg)
 	}
