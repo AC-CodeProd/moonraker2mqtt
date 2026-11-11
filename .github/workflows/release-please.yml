@@ -33,7 +33,7 @@ jobs:
 
       - name: Check formatting
         run: |
-          if ["$(gofmt -l . | wc -l)" -gt 0]; then
+          if [ "$(gofmt -l . | wc -l)" -gt 0 ]; then
             echo "Code is not properly formatted:"
             gofmt -l .
             exit 1
