@@ -11,7 +11,7 @@ import (
 	"github.com/soypat/lneto"
 	"github.com/soypat/lneto/tcp"
 	"github.com/soypat/lneto/x/xnet"
-	"moonraker2mqtt/internal/tinygotcpfixture"
+
 	"net"
 	"net/http"
 	"net/netip"
@@ -112,7 +112,7 @@ func TestNativeSocketThroughBoundedWebSocketHTTP(t *testing.T) {
 			if e != nil {
 				return nil, e
 			}
-			return tinygotcpfixture.BindOwned(stream), nil
+			return xnet.BindStream(stream, remote), nil
 		}
 		ws, e := cfg.DialBoundedWithBuffers(context.Background(), time.Second, func(net.Conn) {}, &buffers)
 		native, token, backings, caps := owner.FixtureOwnerSnapshot()

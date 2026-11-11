@@ -1,5 +1,3 @@
-//go:build !tinygo && !jsoncontexttest
-
 package diagjson
 
 import "encoding/json"

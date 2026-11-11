@@ -5,7 +5,7 @@ package xnet
 import (
 	"context"
 	"github.com/soypat/lneto"
-	"github.com/soypat/lneto/internal/tinygotcpfixture"
+
 	"github.com/soypat/lneto/tcp"
 	"net"
 	"net/netip"
@@ -62,7 +62,7 @@ func TestNativeDialOwnerTinyGoCapabilityRoute(t *testing.T) {
 	mqtt := broker.getConn(mfd).sock.(tcpconn).Conn
 	mqttGeneration := mqtt.Generation()
 	owner := NewNativeDialOwner(sg)
-	var old *tinygotcpfixture.TCPConn
+	var old *StreamConn
 	var oldInterrupt func() error
 	var first [4]any
 	remote := net.TCPAddrFromAddrPort(netip.AddrPortFrom(netip.AddrFrom4(server.Addr4()), 8080))
@@ -79,7 +79,7 @@ func TestNativeDialOwnerTinyGoCapabilityRoute(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		raw := tinygotcpfixture.BindOwned(stream)
+		raw := BindStream(stream, remote)
 		c := owner.attempt.conn
 		backing, caps := c.FixtureBackings()
 		if caps != [4]int{4096, 1024, 4, 8} {

@@ -5,7 +5,7 @@ package xnet
 import (
 	"bufio"
 	"errors"
-	"github.com/soypat/lneto/internal/tinygotcpfixture"
+
 	"net"
 	"net/http"
 	"os"
@@ -18,7 +18,7 @@ func TestTinyGoBerkeleyNativeDeadlineContract(t *testing.T) {
 	tst := testerFrom(t, 1500)
 	tst.TestTCPSetupAndEstablish(server, client, sc, cc, 8080, 1337)
 	s := &StackBerkeley{nextFD: 4, conns: []socket[net.Conn]{{sockfd: 3, sock: tcpconn{Conn: cc}}}}
-	raw := tinygotcpfixture.Bind(s, 3)
+	raw := BindStream(&BerkeleyStream{stack: s, fd: 3}, nil)
 	future := time.Now().Add(time.Hour)
 	expired := time.Now().Add(-time.Hour)
 	for _, tt := range []struct {

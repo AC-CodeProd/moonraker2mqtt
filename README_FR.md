@@ -12,7 +12,7 @@ Un pont performant et robuste entre Moonraker (Klipper) et MQTT, écrit en Go. C
 - **Application hôte :** Linux, Windows et macOS ; comportement existant conservé.
 - **Firmware expérimental :** ESP32-S3 avec TinyGo, pour le Waveshare ESP32-S3-Zero. La compilation est vérifiée ; le fonctionnement sur carte reste à valider.
 
-Le portage ESP32-S3 est actuellement sur `feat/esp32s3-platform-structure`, sans fusion dans `main`. Sélectionner cette branche avant de suivre les commandes de compilation ci-dessous. Les instructions YAML, variables d’environnement, logs fichiers et systemd concernent uniquement l’application hôte. Voir [Firmware ESP32-S3](#firmware-esp32-s3-expérimental) pour la configuration embarquée et ses limites. Le [diagnostic mémoire et son correctif](docs/ESP32S3_MEMORY.md) détaillent la fragmentation observée et la qualification en lecture seule d’une heure, sans validation des coupures réseau forcées ni de la charge en impression.
+Le portage ESP32-S3 est actuellement sur `feat/esp32s3-platform-structure`, sans fusion dans `main`. Sélectionner cette branche avant de suivre les commandes de compilation ci-dessous. Les instructions YAML, variables d’environnement, logs fichiers et systemd concernent uniquement l’application hôte. Voir [Firmware ESP32-S3](#firmware-esp32-s3-expérimental) pour la configuration embarquée et ses limites.
 
 ## 🚀 Fonctionnalités
 
@@ -407,20 +407,33 @@ make test-firmware-adapter
 make firmware FIRMWARE_LDFLAGS="-X moonraker2mqtt/platform/esp32s3.SetupPassword=remplacer-par-un-secret-unique"
 ```
 
-TinyGo est fixé à **0.44.0 / Go 1.27.3**, avec les surcouches JSON et réseau
-à propriété explicite nécessaires, pas seulement un nouveau tag de compilateur.
-Voir [la compilation reproductible](docs/ESP32S3_BUILD.md) pour le digest exact,
-le cache de modules requis, les sorties et les contrôles du compilateur local.
-`make firmware` fonctionne sans réseau ni accès matériel, dans un répertoire
-privé neuf `FIRMWARE_OUTPUT` (`build/tinygo-0.44.0` par défaut). Choisir un autre
-répertoire pour répéter une compilation. `firmware-local` exige le même compilateur
-déjà corrigé et refuse de compiler si une surcouche manque. Les personnalisations
-`TINYGO_TARGET` restent disponibles ; elles doivent conserver les secteurs de
-paramètres, la RTC NOLOAD et les vecteurs IRAM. Seule la cible par défaut est validée.
-`targets/esp32s3-settings.json` hérite de `esp32s3-supermini` ; le linker 0.44
-conserve un tas en RAM interne et les secteurs réservés. Le formateur corrige
-l’en-tête 4Mio et le digest RAM sans modifier les octets XIP ajoutés après celui-ci.
+La compilation utilise **TinyGo 0.44.0 STANDARD / Go 1.27.3 / LLVM 22.1.4**,
+image ARM64 exacte
+`tinygo/tinygo@sha256:7362ad526b5ed1b675cd7a101f295eb3e3d6d7aa32106a6a88fc49d7dc7f252f`.
+Aucune bibliothèque Go/TinyGo, aucun runtime ni compilateur n'est remplacé.
+Précharger cette image et le cache des modules épinglés (`go mod download`) :
+la compilation firmware ne télécharge ni image ni dépendance. Seules les
+adaptations réseau distribuées dans `third_party/lneto` et
+`third_party/natiu-mqtt` sont sélectionnées par `go.mod`.
+
+`make firmware` monte sources et modules en lecture seule, coupe le réseau,
+retire les capacités et utilise l'UID courant avec des caches neufs dans un
+répertoire privé `FIRMWARE_OUTPUT` (`build/stock-tinygo-0.44.0` par défaut).
+Choisir un nouveau répertoire à chaque compilation. Les sorties sont
+**`firmware.elf` et `firmware-raw.bin`, pas une image prête à installer**.
+Les conteneurs arrêtés sont conservés pour inspection. La cible par défaut
+`targets/esp32s3-settings.json` hérite de `esp32s3-supermini` et conserve le
+linker applicatif, les secteurs réservés, la RTC NOLOAD et les vecteurs IRAM.
 Ni PSRAM utilisable, second cœur ni LED ne sont supposés.
+
+**Le formatage de l'image est un prérequis externe.** Le format RAM suivi de XIP
+nécessite un formateur revu qui fixe l'en-tête 4Mio puis recalcule le digest RAM
+à l'offset déduit de la table des segments, sans changer les octets XIP ajoutés.
+Ce formateur et les outils de qualification matérielle ne sont pas distribués
+dans ce dépôt. Ne pas appliquer une correction SHA aux 32 derniers octets,
+flasher la sortie brute ni présenter la construction d'installation comme
+adéquate avec le seul dépôt. Une validation de fichier ne prouve ni le boot ROM
+ni la persistance des paramètres sur carte.
 
 Sans paramètres enregistrés ni configuration `-X` valide, rejoindre
 `Moonraker-Setup` avec le mot de passe WPA2 unique de compilation, puis ouvrir
@@ -457,25 +470,36 @@ automatique.
 
 ### État de validation et limites
 
-Les sources actuelles comprennent les abonnements MQTT bornés et les payloads
-en flux, la réception WebSocket et la publication JSON empruntées, le décodage
-typé de l’état Klippy avec repli en cas de collision, les workers protocolaires
-réutilisables et la réservation réseau native à propriété explicite.
-Si le Wi-Fi échoue au démarrage avec des paramètres valides enregistrés, un
-redémarrage contrôlé est demandé après un délai post-erreur de 30 secondes,
-au lieu d’ouvrir le portail. L’appel natif d’association lui-même n’est **ni
-annulable ni borné en durée**. La reprise ordinaire MQTT/Moonraker reste distincte
-de cette reprise Wi-Fi par reboot. Aucun pilote expérimental de réassociation
-Wi-Fi dans le même démarrage n’est inclus. Cette intégration n’est ni une
-correction générale des OOM, ni une nouvelle qualification matérielle.
+L'adaptation standard conserve les abonnements MQTT bornés, les payloads en
+flux, les buffers de réception WebSocket empruntés, le décodage typé de l'état
+Klippy avec repli en cas de collision, les workers réutilisables et la réservation
+TCP native. Les connexions protocolaires passent par un adaptateur lneto
+implémentant l'interface publique `net.Conn`, sans extension privée de `net`
+TinyGo. Interruption de génération et retrait du stockage restent dans la
+dépendance réseau ; le HTTP du portail utilise le `net` standard. L'adresse
+locale non exposée est signalée inconnue (`nil`), pas inventée.
 
-**Les chiffres 0.42 et limites initiales ci-dessous sont historiques, pas les
-mesures de la compilation 0.44 actuelle.** Voir le document de compilation.
+**La publication JSON possède maintenant toujours le résultat de `json.Marshal`
+standard**, y compris sur MCU. La publication reste synchrone, mais réintroduit
+la copie JSON finale et son allocation. Plus de bail privé d'encodeur ni de hooks
+d'origine JSON/allocateur : ne pas attribuer à ce firmware les anciens gains
+ou profils de producteurs. Le volume d'allocations et la pression de
+fragmentation peuvent augmenter. Aucune nouvelle garantie de pic mémoire,
+marge de pile ou stabilité MCU n'est apportée.
 
-Portail non configuré + pont complet : **1 297 447 octets de flash et 158 620
-octets de RAM statique**. Configuration avec commandes actives : **1 297 899
-octets de flash et 158 740 octets de RAM statique**. Hors allocations dynamiques
-et piles. Les deux parcours restent compilés même sans identifiants réseau.
+Un échec Wi-Fi au démarrage avec paramètres enregistrés demande toujours un
+reboot contrôlé après le délai post-erreur existant de 30 secondes. L'appel
+natif d'association lui-même n'est **ni annulable ni borné en durée**. La reprise
+MQTT/Moonraker et le retrait natif restent distincts de ce reboot Wi-Fi : aucun
+reboot MQTT de substitution ni worker de reprise abandonné. Comportement hôte
+inchangé.
+
+**Compiler sur MCU et qualifier physiquement sont deux étapes distinctes.**
+L'observation historique d'une heure utilisait un compilateur modifié : elle
+ne qualifie pas ce firmware standard. Les anciens chiffres flash/RAM statique
+ne sont pas des mesures stock actuelles. Ni installation, trafic imprimante/broker,
+écriture de paramètres ni essai physique ne sont autorisés ou impliqués par
+les tests hôte ou une compilation réussie.
 
 Deux secteurs de 4Kio sont réservés dans `[0x1fe000, 0x200000)`, volontairement
 sous la géométrie ROM par défaut de 2Mio sur la vraie flash de 4Mio. Le linker
@@ -487,11 +511,10 @@ callbacks ROM, sécurité, cœur1 en reset et absence de mappings PSRAM. Tous le
 accès flash sont définitivement bloqués pour ce démarrage avant la radio.
 Wrapper et vecteurs d’exception temporaires utilisent uniquement IRAM/ROM.
 
-Voir [sécurité, preuves et autorisation matériel](docs/ESP32S3_SETUP.md) avant
-flashage. Autorisation explicite requise pour installer le nouveau candidat et
-qualifier erase/program des secteurs de paramètres. Ni effacement complet ni
-changement d’eFuse. L’avertissement SHA ROM indépendant reste déclaré, sans
-prétendre le corriger ici.
+Avant tout flashage, obtenir une autorisation explicite pour l'image et l'action
+exactes. La qualification erase/program des paramètres exige aussi une
+autorisation distincte ; ni effacement complet ni changement d'eFuse. L'ancien
+avertissement SHA ROM indépendant n'est pas prétendu corrigé par cette adaptation.
 
 MQTT TCP et `ws://` sans TLS ; QoS0 ; 4 abonnements exacts, payload MQTT 4096
 octets, topics 256 octets, 4 commandes en file, 4 messages WebSocket en file,

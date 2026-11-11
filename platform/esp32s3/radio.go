@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/soypat/lneto/x/xnet"
+	"moonraker2mqtt/internal/nativetcp"
 	"moonraker2mqtt/platform/esp32s3/network"
 	"tinygo.org/x/drivers/netdev"
 	nl "tinygo.org/x/drivers/netlink"
@@ -38,6 +39,7 @@ var _ netdev.Netdever = (*radioLink)(nil)
 
 func newRadioLink() *radioLink {
 	n := &radioLink{}
+	nativetcp.NewOwner = n.newNativeDialOwner
 	n.life.Device = (*radioDriver)(n)
 	return n
 }

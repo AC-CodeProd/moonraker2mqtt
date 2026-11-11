@@ -2,6 +2,6 @@
 
 package websocket
 
-import "net"
+import "moonraker2mqtt/internal/nativetcp"
 
-func newNativeDialOwner() (nativeDialOwner, error) { return net.NewOwnedDialer() }
+func newNativeDialOwner() (nativeDialOwner, error) { return nativetcp.New() }

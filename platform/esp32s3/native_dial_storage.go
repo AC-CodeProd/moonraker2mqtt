@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"github.com/soypat/lneto/x/xnet"
+	"moonraker2mqtt/internal/nativetcp"
 	"moonraker2mqtt/platform/esp32s3/network"
 	"net"
 	"strconv"
@@ -16,16 +17,15 @@ type radioDialStorage struct {
 	owner *xnet.NativeDialOwner
 }
 
-// NewNativeDialStorage is opt-in via TinyGo net.NewOwnedDialer. The default
-// MQTT netdev/FD namespace is unchanged. Storage is prepared before first app
-// dialing, after the existing radio/DHCP bootstrap (not claimed pre-radio).
-func (n *radioLink) NewNativeDialStorage() (net.NativeDialStorage, error) {
+// newNativeDialOwner uses the application adapter and the selected lneto stack.
+// The stock TinyGo netdev backend remains untouched for setup HTTP traffic.
+func (n *radioLink) newNativeDialOwner() (nativetcp.Owner, error) {
 	if !n.connected() || n.StackBerkeley == nil {
 		return nil, network.ErrDown
 	}
 	return &radioDialStorage{radio: n, owner: xnet.NewNativeDialOwner(n.goStack)}, nil
 }
-func (d *radioDialStorage) DialContext(ctx context.Context, networkName, address string) (net.OwnedTCPHandle, error) {
+func (d *radioDialStorage) DialContext(ctx context.Context, networkName, address string) (net.Conn, error) {
 	if ctx.Err() != nil {
 		return nil, ctx.Err()
 	}
@@ -47,6 +47,11 @@ func (d *radioDialStorage) DialContext(ctx context.Context, networkName, address
 	if !ip.Is4() {
 		return nil, errors.New("owned native dial requires IPv4")
 	}
-	return d.owner.DialContext(ctx, networkName, &net.TCPAddr{IP: ip.AsSlice(), Port: port})
+	remote := &net.TCPAddr{IP: ip.AsSlice(), Port: port}
+	stream, err := d.owner.DialContext(ctx, networkName, remote)
+	if err != nil {
+		return nil, err
+	}
+	return xnet.BindStream(stream, remote), nil
 }
 func (d *radioDialStorage) Retire() error { return d.owner.Retire() }

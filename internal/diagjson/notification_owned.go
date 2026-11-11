@@ -1,8 +1,8 @@
-//go:build !tinygo && !jsonborrowtest
-
 package diagjson
 
-// Notification keeps the hosted and unqualified client ownership contract.
+// Notification owns the stock json.Marshal result on every platform.
+// The legacy borrow flag is ignored. Publication remains synchronous; no
+// exclusive encoder lease or standard-library instrumentation is required.
 type Notification struct{ data []byte }
 
 func (n *Notification) Encode(v any, borrow bool) (err error) { n.data, err = Marshal(1, v); return }

@@ -19,7 +19,17 @@ func TestOwnedStorageDrainsActualNativeWaits(t *testing.T) {
 			entered := make(chan struct{}, 4)
 			proceed := make(chan struct{})
 			a := NewOwnedDial(&store)
-			c, e := a.acquire(client, func(uint) time.Duration { entered <- struct{}{}; <-proceed; return 0 })
+			c, e := a.acquire(client, func(uint) time.Duration {
+				// Admission closure precedes Abort. A resumed native operation can
+				// retry backoff before Abort gets the stack lock. Observing retries
+				// must never fill this channel and strand that real operation.
+				select {
+				case entered <- struct{}{}:
+				default:
+				}
+				<-proceed
+				return 0
+			})
 			if e != nil {
 				t.Fatal(e)
 			}

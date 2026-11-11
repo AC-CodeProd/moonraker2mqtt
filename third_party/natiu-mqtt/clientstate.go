@@ -72,102 +72,104 @@ func (cs *clientState) onDisconnect(err error) {
 // callbacks returns the Rx and Tx callbacks necessary for a clientState to function automatically.
 // The onPub callback
 func (cs *clientState) callbacks(onPub func(rx *Rx, varPub VariablesPublish, r io.Reader) error) (RxCallbacks, TxCallbacks) {
-	return RxCallbacks{
-			OnConnack: func(r *Rx, vc VariablesConnack) error {
-				connTime := cs.nanotime()
+	rxCallbacks := RxCallbacks{
+		OnConnack: func(r *Rx, vc VariablesConnack) error {
+			connTime := cs.nanotime()
+			cs.mu.Lock()
+			defer cs.mu.Unlock()
+			cs.lastRx = connTime
+			if cs.closeErr == nil {
+				return errors.New("connack received while connected")
+			}
+			if vc.ReturnCode != 0 {
+				return vc.ReturnCode
+			}
+			cs.onConnect(connTime)
+			return nil
+		},
+		OnPub: func(rx *Rx, vp VariablesPublish, r io.Reader) error {
+			// Inbound QoS>0 PUBLISH must be reported to the orchestrator so it
+			// can advance the inbound state machine (enqueue PUBACK/PUBREC).
+			if rx.LastReceivedHeader.Flags().QoS() != QoS0 {
 				cs.mu.Lock()
-				defer cs.mu.Unlock()
-				cs.lastRx = connTime
-				if cs.closeErr == nil {
-					return errors.New("connack received while connected")
-				}
-				if vc.ReturnCode != 0 {
-					return vc.ReturnCode
-				}
-				cs.onConnect(connTime)
-				return nil
-			},
-			OnPub: func(rx *Rx, vp VariablesPublish, r io.Reader) error {
-				// Inbound QoS>0 PUBLISH must be reported to the orchestrator so it
-				// can advance the inbound state machine (enqueue PUBACK/PUBREC).
-				if rx.LastReceivedHeader.Flags().QoS() != QoS0 {
-					cs.mu.Lock()
-					orch := cs.orchestrator
-					cs.mu.Unlock()
-					if orch != nil {
-						if err := orch.OnControlPacket(rx.LastReceivedHeader, vp.PacketIdentifier); err != nil {
-							return err
-						}
-					}
-				}
-				if onPub != nil {
-					return onPub(rx, vp, r)
-				}
-				return nil
-			},
-			OnSuback: func(r *Rx, vs VariablesSuback) error {
-				rxTime := cs.nanotime()
-				cs.mu.Lock()
-				defer cs.mu.Unlock()
-				cs.lastRx = rxTime
-				if len(vs.ReturnCodes) != len(cs.pendingSubs.TopicFilters) {
-					return errors.New("got mismatched number of return codes compared to pending client subscriptions")
-				}
-				for i, qos := range vs.ReturnCodes {
-					if qos != QoSSubfail {
-						if qos != cs.pendingSubs.TopicFilters[i].QoS {
-							return errors.New("QoS does not match requested QoS for topic")
-						}
-						if !cs.disableSubscriptionHistory {
-							cs.activeSubs = append(cs.activeSubs, string(cs.pendingSubs.TopicFilters[i].TopicFilter))
-						}
-					}
-				}
-				cs.pendingSubs.TopicFilters = cs.pendingSubs.TopicFilters[:0]
-				return nil
-			},
-			OnOther: func(rx *Rx, packetIdentifier uint16) (err error) {
-				tp := rx.LastReceivedHeader.Type()
-				rxTime := cs.nanotime()
-				cs.mu.Lock()
-				cs.lastRx = rxTime
-				var orch QoSOrchestrator
-				switch tp {
-				case PacketDisconnect:
-					err = errDisconnected
-				case PacketPingreq:
-					cs.pendingPingreq = rxTime
-				case PacketPingresp:
-					cs.pendingPingresp = 0 // got the response, we can unflag.
-				case PacketPuback, PacketPubrec, PacketPubrel, PacketPubcomp:
-					// QoS1/QoS2 control packets are routed to the orchestrator.
-					orch = cs.orchestrator
-				default:
-					println("unexpected packet type: ", tp.String())
-				}
-				if err != nil {
-					cs.onDisconnect(err)
-				}
+				orch := cs.orchestrator
 				cs.mu.Unlock()
-				// Call orchestrator outside cs.mu to avoid re-entrant deadlock.
 				if orch != nil {
-					err = orch.OnControlPacket(rx.LastReceivedHeader, packetIdentifier)
+					if err := orch.OnControlPacket(rx.LastReceivedHeader, vp.PacketIdentifier); err != nil {
+						return err
+					}
 				}
-				return err
-			},
-			OnRxError: func(r *Rx, err error) {
+			}
+			if onPub != nil {
+				return onPub(rx, vp, r)
+			}
+			return nil
+		},
+		OnSuback: func(r *Rx, vs VariablesSuback) error {
+			rxTime := cs.nanotime()
+			cs.mu.Lock()
+			defer cs.mu.Unlock()
+			cs.lastRx = rxTime
+			if len(vs.ReturnCodes) != len(cs.pendingSubs.TopicFilters) {
+				return errors.New("got mismatched number of return codes compared to pending client subscriptions")
+			}
+			for i, qos := range vs.ReturnCodes {
+				if qos != QoSSubfail {
+					if qos != cs.pendingSubs.TopicFilters[i].QoS {
+						return errors.New("QoS does not match requested QoS for topic")
+					}
+					if !cs.disableSubscriptionHistory {
+						cs.activeSubs = append(cs.activeSubs, string(cs.pendingSubs.TopicFilters[i].TopicFilter))
+					}
+				}
+			}
+			cs.pendingSubs.TopicFilters = cs.pendingSubs.TopicFilters[:0]
+			return nil
+		},
+		OnOther: func(rx *Rx, packetIdentifier uint16) (err error) {
+			tp := rx.LastReceivedHeader.Type()
+			rxTime := cs.nanotime()
+			cs.mu.Lock()
+			cs.lastRx = rxTime
+			var orch QoSOrchestrator
+			switch tp {
+			case PacketDisconnect:
+				err = errDisconnected
+			case PacketPingreq:
+				cs.pendingPingreq = rxTime
+			case PacketPingresp:
+				cs.pendingPingresp = 0 // got the response, we can unflag.
+			case PacketPuback, PacketPubrec, PacketPubrel, PacketPubcomp:
+				// QoS1/QoS2 control packets are routed to the orchestrator.
+				orch = cs.orchestrator
+			default:
+				println("unexpected packet type: ", tp.String())
+			}
+			if err != nil {
 				cs.onDisconnect(err)
-			},
-		}, TxCallbacks{
-			OnTxError: func(tx *Tx, err error) {
-				cs.onDisconnect(err)
-			},
-			OnSuccessfulTx: func(tx *Tx) {
-				cs.mu.Lock()
-				defer cs.mu.Unlock()
-				cs.lastTx = cs.nanotime()
-			},
-		}
+			}
+			cs.mu.Unlock()
+			// Call orchestrator outside cs.mu to avoid re-entrant deadlock.
+			if orch != nil {
+				err = orch.OnControlPacket(rx.LastReceivedHeader, packetIdentifier)
+			}
+			return err
+		},
+		OnRxError: func(r *Rx, err error) {
+			cs.onDisconnect(err)
+		},
+	}
+	txCallbacks := TxCallbacks{
+		OnTxError: func(tx *Tx, err error) {
+			cs.onDisconnect(err)
+		},
+		OnSuccessfulTx: func(tx *Tx) {
+			cs.mu.Lock()
+			defer cs.mu.Unlock()
+			cs.lastTx = cs.nanotime()
+		},
+	}
+	return rxCallbacks, txCallbacks
 }
 
 // IsConnected returns true if the client is currently connected.

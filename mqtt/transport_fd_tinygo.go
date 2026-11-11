@@ -10,7 +10,7 @@ import "net"
 //
 //go:noinline
 func diagnosticFD(conn net.Conn) int {
-	c, ok := conn.(*net.TCPConn)
+	c, ok := conn.(interface{ DiagnosticFD() int })
 	if !ok || c == nil {
 		return -1
 	}

@@ -1,5 +1,3 @@
-//go:build !tinygo && !jsonborrowtest
-
 package bridge
 
 import "moonraker2mqtt/mqtt"

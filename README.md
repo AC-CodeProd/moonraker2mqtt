@@ -408,20 +408,31 @@ make test-firmware-adapter
 make firmware FIRMWARE_LDFLAGS="-X moonraker2mqtt/platform/esp32s3.SetupPassword=replace-with-unique-password"
 ```
 
-TinyGo is pinned to **0.44.0 / Go 1.27.3**, including the required local JSON
-and owned-network overlays, not just a compiler version tag. See
-[reproducible firmware build](docs/ESP32S3_BUILD.md) for the exact image digest,
-module-cache prerequisite, output paths and local compiler checks.
-`make firmware` runs without network or device access, using a fresh private
-`FIRMWARE_OUTPUT` directory (default `build/tinygo-0.44.0`). A repeat build must
-choose another directory. `firmware-local` requires the same pre-patched compiler
-and fails closed when an overlay is absent. `TINYGO_TARGET` overrides remain
-available for advanced builds; custom targets must preserve the settings/RTC
-reservations and IRAM vectors. Only the default target is covered by validation.
-The default `targets/esp32s3-settings.json` inherits `esp32s3-supermini`; the
-0.44 linker retains an internal-RAM-only heap and reserved settings sectors.
-The image formatter updates the 4MiB header and RAM digest without changing
-appended XIP bytes. No PSRAM, second CPU or LED support is assumed.
+The build uses **stock TinyGo 0.44.0 / Go 1.27.3 / LLVM 22.1.4** from
+`tinygo/tinygo@sha256:7362ad526b5ed1b675cd7a101f295eb3e3d6d7aa32106a6a88fc49d7dc7f252f`
+(ARM64). No Go/TinyGo library, runtime or compiler sources are replaced.
+Preload this exact image and populate the pinned module cache with `go mod download`;
+the firmware build never pulls an image or downloads dependencies. Only the
+source-distributed `third_party/lneto` and `third_party/natiu-mqtt` network forks
+are selected by `go.mod`.
+
+`make firmware` mounts sources and modules read-only, disables networking, drops
+capabilities, and runs as the invoking user with fresh writable caches in a new
+private `FIRMWARE_OUTPUT` directory (default `build/stock-tinygo-0.44.0`). Choose a
+new output directory for every build. It produces **`firmware.elf` and
+`firmware-raw.bin`, not an installation-ready image**. Exited build containers
+are retained for inspection. The default `targets/esp32s3-settings.json` inherits
+`esp32s3-supermini`, retaining the application linker, settings sectors, RTC
+NOLOAD reservation and IRAM vectors. No usable PSRAM, second core or board LED
+is assumed.
+
+**Image formatting is an external prerequisite.** The RAM-plus-appended-XIP
+format requires a reviewed formatter that sets the 4MiB image header and
+recomputes the RAM digest at the segment-table-derived offset, preserving every
+appended XIP byte. That formatter and hardware qualification tools are not
+shipped in this repository. Do not apply a generic last-32-byte SHA fix, flash
+the raw output, or claim a self-contained installation build. File validation
+alone does not qualify ROM boot or settings persistence on a board.
 
 Without saved settings or valid link-time fallback settings, join
 `Moonraker-Setup` using the build's unique WPA2 password, then explicitly open
@@ -454,24 +465,33 @@ interrupted repair may lose both old records; no automatic repair/retry occurs.
 
 ### Validation status and limits
 
-Current sources include bounded MQTT subscriptions and streaming payloads,
-borrowed WebSocket receive/JSON publication, typed Klippy-state decoding with
-collision fallback, reusable protocol workers and owned native dial storage.
-Saved-settings Wi-Fi startup failure requests a controlled reboot after a
-30-second post-error backoff instead of entering setup. The native association
-call itself is **not** made cancellable or time-bounded. Ordinary MQTT/Moonraker
-recovery remains distinct from Wi-Fi reboot recovery. No experimental same-boot
-Wi-Fi reassociation driver is included, and this integration is not a general
-OOM cure or a new hardware qualification.
+The stock adaptation retains bounded MQTT subscriptions, streamed payloads,
+borrowed WebSocket receive buffers, typed Klippy-state decoding with collision
+fallback, reusable protocol workers and owned native TCP storage. Protocol
+connections use an explicit lneto `net.Conn` adapter, not private additions to
+TinyGo's `net` package. Its generation interrupt and retirement capabilities
+remain in the network dependency; ordinary setup HTTP uses stock `net`.
+The adapter reports an unknown (`nil`) local endpoint rather than inventing one.
 
-**Historical 0.42 figures and original setup limitations below are not the
-current 0.44 build measurements.** See the build document for the current inputs.
+**JSON publication now always owns a standard `json.Marshal` result**, including
+on the MCU. Publication remains synchronous, but the final owned JSON copy and
+its allocation are restored. Private encoder leases and JSON/allocation-origin
+hooks are absent; previous allocation savings and diagnostic producer bindings
+must not be attributed to this firmware. This can increase allocation churn
+and fragmentation pressure. No new MCU peak-heap, stack-margin or stability
+claim is made.
 
-Unconfigured portal + full bridge: **1,297,447 bytes flash, 158,620 bytes static
-RAM**. Configured build with commands enabled: **1,297,899 bytes flash,
-158,740 bytes static RAM**. These exclude dynamic allocations and runtime
-stacks. Both paths remain linked, so an empty configuration no longer produces
-an artificially tiny build.
+Saved-settings Wi-Fi startup failure still requests a controlled reboot after
+the existing 30-second post-error backoff. The native association call itself
+is **not** made cancellable or time-bounded. MQTT/Moonraker reconnect and native
+retirement remain distinct from Wi-Fi reboot recovery; no reboot-only MQTT
+policy or abandoned recovery worker is substituted. Hosted behavior is unchanged.
+
+**The stock MCU build and hardware qualification are separate gates.** Historical
+one-hour observations used a modified toolchain and do not qualify this stock
+firmware. Previous flash/static-RAM measurements are not current stock results.
+No new installation, printer/broker traffic, settings write or physical test is
+authorized or implied by host tests or successful compilation.
 
 The two 4KiB settings sectors are `[0x1fe000, 0x200000)`, intentionally inside
 the ROM's default 2MiB geometry on the actual 4MiB chip. The linker rejects image
@@ -482,10 +502,10 @@ checks chip/revision, legacy callback defaults, security state, core1 reset and
 absence of PSRAM mappings; all flash access is sealed before starting radio.
 Its cache-off wrapper and temporary exception vectors are IRAM/ROM-only.
 
-See [setup safety, evidence and hardware gate](docs/ESP32S3_SETUP.md) before
-flashing. New firmware flashing and settings erase/program tests require
-explicit authorization; no full-chip erase or eFuse change is provided. The
-existing independent ROM SHA warning remains disclosed, not fixed by this work.
+Before flashing, obtain explicit authorization for the exact image and operation.
+Settings erase/program qualification also requires separate authorization; no
+full-chip erase or eFuse change is provided. The previously observed independent
+ROM SHA warning is not claimed fixed by this stock adaptation.
 
 Plain TCP MQTT and `ws://` only; QoS0; at most 4 exact-topic subscriptions,
 4096-byte MQTT payloads, 256-byte topics, 4 queued incoming commands, 4 queued

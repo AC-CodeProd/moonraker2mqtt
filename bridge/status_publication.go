@@ -2,8 +2,8 @@ package bridge
 
 import "moonraker2mqtt/internal/diagjson"
 
-// Each queried object has its own scope: a leased encoder stays exclusive until
-// the concrete synchronous Publish returns, including error/panic unwinding.
+// Each queried object owns its encoded bytes through synchronous Publish.
+// Release drops only our reference, including on error or panic unwinding.
 func (a *App) publishStatusObject(objectName string, objectData any) bool {
 	var publication diagjson.Notification
 	defer publication.Release() // before user encoding hooks, not deferred in the loop
