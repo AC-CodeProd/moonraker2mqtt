@@ -29,9 +29,18 @@ func (c *qualifiedGenerationConn) GenerationInterrupt() (func() error, error) {
 		return c.Close()
 	}, nil
 }
+
+func closeGenerationTestConn(t *testing.T, c net.Conn) {
+	t.Helper()
+	if err := c.Close(); err != nil {
+		t.Errorf("close generation test connection: %v", err)
+	}
+}
+
 func TestGenerationTransportOwnsCapabilityAndIdempotentConcurrentClose(t *testing.T) {
 	a, b := net.Pipe()
-	defer b.Close()
+	defer closeGenerationTestConn(t, a)
+	defer closeGenerationTestConn(t, b)
 	q := &qualifiedGenerationConn{Conn: a}
 	owned, e := ownGenerationTransport(q)
 	if e != nil {
@@ -42,7 +51,12 @@ func TestGenerationTransportOwnsCapabilityAndIdempotentConcurrentClose(t *testin
 	var wg sync.WaitGroup
 	for i := 0; i < 32; i++ {
 		wg.Add(1)
-		go func() { defer wg.Done(); _ = owned.Close() }()
+		go func() {
+			defer wg.Done()
+			if err := owned.Close(); err != nil {
+				t.Errorf("close owned transport: %v", err)
+			}
+		}()
 	}
 	wg.Wait()
 	select {
@@ -62,8 +76,8 @@ func TestGenerationTransportOwnsCapabilityAndIdempotentConcurrentClose(t *testin
 }
 func TestGenerationTransportCapabilityRejectionDoesNotFallback(t *testing.T) {
 	a, b := net.Pipe()
-	defer a.Close()
-	defer b.Close()
+	defer closeGenerationTestConn(t, a)
+	defer closeGenerationTestConn(t, b)
 	sentinel := errors.New("stale generation")
 	q := &qualifiedGenerationConn{Conn: a, rejection: sentinel}
 	if got, e := ownGenerationTransport(q); got != q || !errors.Is(e, sentinel) {
@@ -75,8 +89,8 @@ func TestGenerationTransportHostedUnqualifiedFallbackUnchanged(t *testing.T) {
 		t.Fatal("host fallback fixture requires hosted compilation")
 	}
 	a, b := net.Pipe()
-	defer a.Close()
-	defer b.Close()
+	defer closeGenerationTestConn(t, a)
+	defer closeGenerationTestConn(t, b)
 	got, e := ownGenerationTransport(a)
 	if e != nil || got != a {
 		t.Fatal("host unqualified fallback changed", e)

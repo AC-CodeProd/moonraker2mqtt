@@ -168,7 +168,9 @@ func TestDialBuffersReleaseDiscardsErrorPendingWithoutFlush(t *testing.T) {
 	ids := backingIDs(b)
 	bad := &reuseHTTP{mode: "shortwrite"}
 	b.pair.Writer.Reset(bad)
-	_, _ = b.pair.WriteString("old bytes")
+	if n, err := b.pair.WriteString("old bytes"); err != nil || n != len("old bytes") {
+		t.Fatalf("buffer old bytes: n=%d err=%v", n, err)
+	}
 	if b.pair.Flush() != io.ErrShortWrite {
 		t.Fatal("shortwrite not reached")
 	}
@@ -184,9 +186,14 @@ func TestDialBuffersReleaseDiscardsErrorPendingWithoutFlush(t *testing.T) {
 	if good.String() != "new" || backingIDs(b) != ids {
 		t.Fatal("stale error/data or new buffers")
 	}
-	b.pair.Writer.WriteString("unflushed old")
+	if n, err := b.pair.WriteString("unflushed old"); err != nil || n != len("unflushed old") {
+		t.Fatalf("buffer pending bytes: n=%d err=%v", n, err)
+	}
+	if b.pair.Writer.Buffered() != len("unflushed old") {
+		t.Fatal("pending bytes not buffered")
+	}
 	b.Release()
-	if good.String() != "new" {
+	if good.String() != "new" || b.pair.Writer.Buffered() != 0 {
 		t.Fatal("Release flushed old bytes")
 	}
 }
