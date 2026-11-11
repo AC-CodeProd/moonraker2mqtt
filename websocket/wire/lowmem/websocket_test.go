@@ -15,10 +15,12 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"reflect"
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -26,9 +28,84 @@ import (
 var serverAddr string
 var once sync.Once
 
+var fixtureServer *httptest.Server
+var fixtureHandlers sync.WaitGroup
+var fixtureConnMu sync.Mutex
+var fixtureConns = make(map[net.Conn]struct{})
+var fixtureFailed atomic.Bool
+
+func TestMain(m *testing.M) {
+	status := m.Run()
+	if fixtureServer != nil {
+		fixtureServer.Close()
+		fixtureConnMu.Lock()
+		conns := make([]net.Conn, 0, len(fixtureConns))
+		for c := range fixtureConns {
+			conns = append(conns, c)
+		}
+		fixtureConnMu.Unlock()
+		// HTTP shutdown does not close hijacked WebSocket connections.
+		for _, c := range conns {
+			recordTestServerError("close owned test socket", c.Close())
+		}
+		fixtureHandlers.Wait()
+	}
+	if fixtureFailed.Load() {
+		status = 1
+	}
+	os.Exit(status)
+}
+
+func isTestPeerShutdown(err error) bool {
+	return errors.Is(err, io.EOF) || errors.Is(err, net.ErrClosed) ||
+		isTestPeerTransportShutdown(err)
+}
+
+func recordTestServerError(operation string, err error) {
+	if err != nil && !isTestPeerShutdown(err) {
+		fixtureFailed.Store(true)
+		log.Printf("WebSocket test server %s: %v", operation, err)
+	}
+}
+
+func closeTestServerWebSocket(ws *Conn) {
+	recordTestServerError("close after peer shutdown", ws.Close())
+}
+
+func closeTestPeerWebSocket(t *testing.T, ws *Conn) {
+	t.Helper()
+	if err := ws.Close(); err != nil && !isTestPeerShutdown(err) {
+		t.Errorf("close WebSocket after peer exit: %v", err)
+	}
+}
+
+func TestPeerShutdownClassification(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"EOF", io.EOF, true},
+		{"closed socket", net.ErrClosed, true},
+		{"timeout", os.ErrDeadlineExceeded, false},
+		{"short write", io.ErrShortWrite, false},
+		{"truncated frame", io.ErrUnexpectedEOF, false},
+		{"protocol", ErrBadFrame, false},
+		{"same text is not EOF", errors.New("EOF"), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isTestPeerShutdown(tc.err); got != tc.want {
+				t.Fatalf("isTestPeerShutdown(%v) = %v, want %v", tc.err, got, tc.want)
+			}
+		})
+	}
+}
+
 func echoServer(ws *Conn) {
-	defer ws.Close()
-	io.Copy(ws, ws)
+	defer closeTestServerWebSocket(ws)
+	if _, err := io.Copy(ws, ws); err != nil {
+		recordTestServerError("echo copy", err)
+	}
 }
 
 type Count struct {
@@ -37,17 +114,19 @@ type Count struct {
 }
 
 func countServer(ws *Conn) {
-	defer ws.Close()
+	defer closeTestServerWebSocket(ws)
 	for {
 		var count Count
 		err := JSON.Receive(ws, &count)
 		if err != nil {
+			recordTestServerError("receive count", err)
 			return
 		}
 		count.N++
 		count.S = strings.Repeat(count.S, count.N)
 		err = JSON.Send(ws, count)
 		if err != nil {
+			recordTestServerError("send count", err)
 			return
 		}
 	}
@@ -123,33 +202,42 @@ func TestWritePingPropagatesFrameErrors(t *testing.T) {
 }
 
 func ctrlAndDataServer(ws *Conn) {
-	defer ws.Close()
 	h := &testCtrlAndDataHandler{hybiFrameHandler: hybiFrameHandler{conn: ws}}
 	ws.frameHandler = h
 
+	controlDone := make(chan struct{})
 	go func() {
+		defer close(controlDone)
 		for i := 0; ; i++ {
 			var b []byte
 			if i%2 != 0 { // with or without payload
 				b = []byte(fmt.Sprintf("#%d-CONTROL-FRAME-FROM-SERVER", i))
 			}
 			if _, err := h.WritePing(b); err != nil {
+				recordTestServerError("send ping", err)
 				break
 			}
 			if _, err := h.WritePong(b); err != nil { // unsolicited pong
+				recordTestServerError("send pong", err)
 				break
 			}
 			time.Sleep(10 * time.Millisecond)
 		}
+	}()
+	defer func() {
+		closeTestServerWebSocket(ws)
+		<-controlDone
 	}()
 
 	b := make([]byte, 128)
 	for {
 		n, err := ws.Read(b)
 		if err != nil {
+			recordTestServerError("receive control/data", err)
 			break
 		}
 		if _, err := ws.Write(b[:n]); err != nil {
+			recordTestServerError("send control/data", err)
 			break
 		}
 	}
@@ -166,21 +254,46 @@ func subProtocolHandshake(config *Config, req *http.Request) error {
 }
 
 func subProtoServer(ws *Conn) {
+	defer closeTestServerWebSocket(ws)
 	for _, proto := range ws.Config().Protocol {
-		io.WriteString(ws, proto)
+		if n, err := io.WriteString(ws, proto); err != nil {
+			recordTestServerError("send subprotocol", err)
+			return
+		} else if n != len(proto) {
+			recordTestServerError("send subprotocol", io.ErrShortWrite)
+			return
+		}
 	}
 }
 
 func startServer() {
-	http.Handle("/echo", Handler(echoServer))
-	http.Handle("/count", Handler(countServer))
-	http.Handle("/ctrldata", Handler(ctrlAndDataServer))
+	mux := http.NewServeMux()
+	mux.Handle("/echo", Handler(echoServer))
+	mux.Handle("/count", Handler(countServer))
+	mux.Handle("/ctrldata", Handler(ctrlAndDataServer))
 	subproto := Server{
 		Handshake: subProtocolHandshake,
 		Handler:   Handler(subProtoServer),
 	}
-	http.Handle("/subproto", subproto)
-	server := httptest.NewServer(nil)
+	mux.Handle("/subproto", subproto)
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Register before hijacking, so shutdown cannot miss a late handler.
+		fixtureHandlers.Add(1)
+		defer fixtureHandlers.Done()
+		mux.ServeHTTP(w, r)
+	}))
+	server.Config.ConnState = func(c net.Conn, state http.ConnState) {
+		fixtureConnMu.Lock()
+		defer fixtureConnMu.Unlock()
+		switch state {
+		case http.StateNew:
+			fixtureConns[c] = struct{}{}
+		case http.StateClosed:
+			delete(fixtureConns, c)
+		}
+	}
+	server.Start()
+	fixtureServer = server
 	serverAddr = server.Listener.Addr().String()
 	log.Print("Test WebSocket server listening on ", serverAddr)
 }
@@ -330,14 +443,17 @@ func testWithProtocol(t *testing.T, subproto []string) (string, error) {
 
 	ws, err := NewClient(config, client)
 	if err != nil {
+		if closeErr := client.Close(); closeErr != nil {
+			t.Errorf("close rejected subprotocol client: %v", closeErr)
+		}
 		return "", err
 	}
+	defer closeTestPeerWebSocket(t, ws)
 	msg := make([]byte, 16)
 	n, err := ws.Read(msg)
 	if err != nil {
 		return "", err
 	}
-	ws.Close()
 	return string(msg[:n]), nil
 }
 
@@ -383,6 +499,11 @@ func TestHTTP(t *testing.T) {
 		t.Error("Get: resp is null")
 		return
 	}
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			t.Errorf("close HTTP rejection body: %v", err)
+		}
+	}()
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Errorf("Get: expected %q got %q", http.StatusBadRequest, resp.StatusCode)
 	}
@@ -692,7 +813,7 @@ func TestCodec_ReceiveLimited(t *testing.T) {
 	limitedHandler := func(ws *Conn) {
 		defer close(handlerDone)
 		ws.MaxPayloadBytes = limit
-		defer ws.Close()
+		defer closeTestServerWebSocket(ws)
 		for i, p := range payloads {
 			t.Logf("payload #%d (size %d, exceeds limit: %v)", i, len(p), len(p) > limit)
 			var recv []byte
@@ -723,7 +844,10 @@ func TestCodec_ReceiveLimited(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer ws.Close()
+	defer func() {
+		closeTestPeerWebSocket(t, ws)
+		<-handlerDone
+	}()
 	for i, p := range payloads {
 		if err := Message.Send(ws, p); err != nil {
 			t.Fatalf("payload #%d (size %d): %v", i, len(p), err)
