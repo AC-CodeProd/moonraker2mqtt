@@ -48,3 +48,17 @@ tmp
 !/docs/ESP32S3_SETUP.md
 !/docs/ESP32S3_MEMORY.md
 !/websocket/wire/lowmem/LICENSE
+# Targeted source-distributed dependencies and compiler overlays only.
+!/third_party/lneto/LICENSE
+!/third_party/natiu-mqtt/LICENSE
+!/third_party/natiu-mqtt/LOCAL_CHANGES.md
+!/third_party/tinygo-0.44.0/GO-LICENSE
+!/tools/firmware_build.py
+!/tools/test_settings_image.py
+!/docs/ESP32S3_BUILD.md
+# Never include generated logs, Python bytecode or embedded credential artifacts.
+__pycache__/
+*.pyc
+/logs/
+# Exclude upstream benchmark-report tooling from the source-only fork subset.
+/third_party/lneto/internal/benchci/

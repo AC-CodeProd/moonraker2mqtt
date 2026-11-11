@@ -1,5 +1,10 @@
 module moonraker2mqtt
 
+// Pinned, source-distributed firmware lifecycle fixes; no external fork paths.
+replace github.com/soypat/lneto => ./third_party/lneto
+
+replace github.com/soypat/natiu-mqtt => ./third_party/natiu-mqtt
+
 go 1.24.4
 
 require (

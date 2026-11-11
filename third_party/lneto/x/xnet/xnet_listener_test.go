@@ -1,0 +1,308 @@
+package xnet
+
+import (
+	"net/netip"
+	"testing"
+
+	"github.com/soypat/lneto"
+	"github.com/soypat/lneto/ethernet"
+	"github.com/soypat/lneto/tcp"
+)
+
+func TestStackAsyncListener_SingleConnection(t *testing.T) {
+	const seed int64 = 1234
+	const MTU = ethernet.MaxMTU
+	const carrierSize = MTU + ethernet.MaxOverheadSize
+	const svPort = 80
+	const clPort = 1337
+
+	// Create two stacks.
+	client, sv := new(StackAsync), new(StackAsync)
+	err := client.Reset(StackConfig{
+		Hostname:          "Client",
+		RandSeed:          seed,
+		StaticAddress4:    [4]byte{10, 0, 0, 1},
+		MaxActiveTCPPorts: 1,
+		HardwareAddress:   [6]byte{0xbe, 0xef, 0, 0, 0, 1},
+		MTU:               MTU,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = sv.Reset(StackConfig{
+		Hostname:          "Server",
+		RandSeed:          ^seed,
+		StaticAddress4:    [4]byte{10, 0, 0, 2},
+		MaxActiveTCPPorts: 1, // Note: We use listener, not direct TCP conn registration.
+		HardwareAddress:   [6]byte{0xbe, 0xef, 0, 0, 0, 2},
+		MTU:               MTU,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	client.SetGatewayHardwareAddr(sv.HardwareAddr())
+	sv.SetGatewayHardwareAddr(client.HardwareAddr())
+
+	// Create client connection.
+	var clConn tcp.Conn
+	err = clConn.Configure(tcp.ConnConfig{
+		RxBuf:             make([]byte, MTU),
+		TxBuf:             make([]byte, MTU),
+		TxPacketQueueSize: 4,
+		RWBackoff:         backoffYield,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Create pool and listener for server.
+	pool, err := NewTCPPool(TCPPoolConfig{
+		PoolSize:           1,
+		QueueSize:          4,
+		TxBufSize:          MTU,
+		RxBufSize:          MTU,
+		EstablishedTimeout: 10e9,
+		ClosingTimeout:     10e9,
+		NewBackoff:         func() lneto.BackoffStrategy { return backoffYield },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var listener tcp.Listener
+	err = listener.Reset(svPort, pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = sv.RegisterListenerTCP(&listener)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Client dials server.
+	err = client.DialTCP(&clConn, clPort, netip.AddrPortFrom(netip.AddrFrom4(sv.Addr4()), svPort))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tst := testerFrom(t, MTU)
+
+	// Complete TCP handshake.
+	tst.TestTCPHandshake(client, sv)
+
+	// After handshake, TryAccept should work.
+	if listener.NumberOfReadyToAccept() != 1 {
+		t.Fatalf("after handshake: expected 1 ready, got %d", listener.NumberOfReadyToAccept())
+	}
+	svConn, _, err := listener.TryAccept()
+	if err != nil {
+		t.Fatalf("TryAccept: %v", err)
+	}
+	if listener.NumberOfReadyToAccept() != 0 {
+		t.Fatalf("after accept: expected 0 ready, got %d", listener.NumberOfReadyToAccept())
+	}
+
+	// Verify both connections are established.
+	if clConn.State() != tcp.StateEstablished {
+		t.Fatalf("client: expected StateEstablished, got %s", clConn.State())
+	}
+	if svConn.State() != tcp.StateEstablished {
+		t.Fatalf("server: expected StateEstablished, got %s", svConn.State())
+	}
+
+	// Test data exchange: client -> server.
+	sendData := []byte("hello from client")
+	tst.TestTCPEstablishedSingleData(client, sv, &clConn, svConn, sendData)
+
+	// Test data exchange: server -> client.
+	replyData := []byte("hello from server")
+	tst.TestTCPEstablishedSingleData(sv, client, svConn, &clConn, replyData)
+
+	// Test close (client-initiated).
+	tst.TestTCPClose(client, sv, &clConn, svConn)
+}
+
+func TestStackAsyncListener_MultiSequentialConn(t *testing.T) {
+	const seed int64 = 1234
+	const MTU = ethernet.MaxMTU
+	const carrierSize = MTU + ethernet.MaxOverheadSize
+	const svPort = 80
+	const clPort = 1337
+	const poolsize = 10
+	const bufsize = 128
+	// Create two stacks.
+	sv := new(StackAsync)
+	err := sv.Reset(StackConfig{
+		Hostname:          "Server",
+		RandSeed:          ^seed,
+		StaticAddress4:    [4]byte{10, 0, 0, 2},
+		MaxActiveTCPPorts: 1, // Note: We use listener, not direct TCP conn registration.
+		HardwareAddress:   [6]byte{0xbe, 0xef, 0, 0, 0, 2},
+		MTU:               MTU,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Create pool and listener for server.
+	pool, err := NewTCPPool(TCPPoolConfig{
+		PoolSize:           poolsize,
+		QueueSize:          4,
+		TxBufSize:          bufsize,
+		RxBufSize:          bufsize,
+		EstablishedTimeout: 10e9,
+		ClosingTimeout:     10e9,
+		NewBackoff:         func() lneto.BackoffStrategy { return backoffYield },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var listener tcp.Listener
+	err = listener.Reset(svPort, pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = sv.RegisterListenerTCP(&listener)
+	if err != nil {
+		t.Fatal(err)
+	}
+	caddr := netip.AddrFrom4([4]byte{10, 0, 0, 1})
+	chw := [6]byte{0xbe, 0xef, 0, 0, 0, 1}
+	sv.SetGatewayHardwareAddr(chw)
+	tst := testerFrom(t, MTU)
+	doRequest := func(caddrp netip.AddrPort, data []byte) {
+		var client StackAsync
+		err := client.Reset(StackConfig{
+			Hostname:          "Client",
+			RandSeed:          seed,
+			StaticAddress4:    caddrp.Addr().As4(),
+			MaxActiveTCPPorts: 1,
+			HardwareAddress:   chw,
+			MTU:               MTU,
+		})
+		if err != nil {
+			panic(err)
+		}
+		client.SetGatewayHardwareAddr(sv.HardwareAddr())
+		// Create client connection.
+		var clConn tcp.Conn
+		err = clConn.Configure(tcp.ConnConfig{
+			RxBuf:             make([]byte, bufsize),
+			TxBuf:             make([]byte, bufsize),
+			TxPacketQueueSize: 4,
+			RWBackoff:         backoffYield,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		// Client dials server.
+		err = client.DialTCP(&clConn, caddrp.Port(), netip.AddrPortFrom(netip.AddrFrom4(sv.Addr4()), svPort))
+		if err != nil {
+			t.Fatal(err)
+		}
+		// Complete TCP handshake.
+		tst.TestTCPHandshake(&client, sv)
+		// After handshake, TryAccept should work.
+		if listener.NumberOfReadyToAccept() != 1 {
+			t.Fatalf("after handshake: expected 1 ready, got %d", listener.NumberOfReadyToAccept())
+		}
+		svconn, _, err := listener.TryAccept()
+		if err != nil {
+			t.Fatal(err)
+		} else if svconn.RemotePort() != clConn.LocalPort() ||
+			[4]byte(svconn.RemoteAddr()) != client.Addr4() {
+			t.Fatal("race condition to listener acquisition")
+		}
+		// Verify both connections are established.
+		if clConn.State() != tcp.StateEstablished {
+			t.Fatalf("client: expected StateEstablished, got %s", clConn.State())
+		}
+		if len(data) > 0 {
+			tst.TestTCPEstablishedSingleData(&client, sv, &clConn, svconn, data)
+		}
+		tst.TestTCPClose(&client, sv, &clConn, svconn)
+	}
+
+	for range 1000 {
+		caddr := caddr.Next()
+		doRequest(netip.AddrPortFrom(caddr, uint16(sv.Prand32())), []byte("HTTP 1.0\r\n"))
+	}
+}
+
+func TestListener_Close(t *testing.T) {
+	const svPort uint16 = 80
+
+	pool, err := NewTCPPool(TCPPoolConfig{
+		PoolSize:           1,
+		QueueSize:          4,
+		TxBufSize:          512,
+		RxBufSize:          512,
+		EstablishedTimeout: 10e9,
+		ClosingTimeout:     10e9,
+		NewBackoff:         func() lneto.BackoffStrategy { return backoffYield },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var listener tcp.Listener
+	err = listener.Reset(svPort, pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if listener.LocalPort() != svPort {
+		t.Fatalf("expected port %d, got %d", svPort, listener.LocalPort())
+	}
+
+	err = listener.Close()
+	if err != nil {
+		t.Fatalf("Close failed: %v", err)
+	}
+	if listener.LocalPort() != 0 {
+		t.Fatalf("port should be 0 after Close, got %d", listener.LocalPort())
+	}
+
+	// Double close should return net.ErrClosed.
+	err = listener.Close()
+	if err == nil {
+		t.Fatal("double Close should return error")
+	}
+}
+
+func TestListener_ResetAfterClose(t *testing.T) {
+	const svPort uint16 = 80
+
+	pool, err := NewTCPPool(TCPPoolConfig{
+		PoolSize:           1,
+		QueueSize:          4,
+		TxBufSize:          512,
+		RxBufSize:          512,
+		EstablishedTimeout: 10e9,
+		ClosingTimeout:     10e9,
+		NewBackoff:         func() lneto.BackoffStrategy { return backoffYield },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var listener tcp.Listener
+	err = listener.Reset(svPort, pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = listener.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Should be able to Reset after Close.
+	err = listener.Reset(svPort, pool)
+	if err != nil {
+		t.Fatalf("Reset after Close failed: %v", err)
+	}
+	if listener.LocalPort() != svPort {
+		t.Fatalf("expected port %d after re-Reset, got %d", svPort, listener.LocalPort())
+	}
+}

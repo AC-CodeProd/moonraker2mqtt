@@ -32,23 +32,6 @@ SECTIONS
 {
     .rtc_pending (NOLOAD) : ALIGN(4) { KEEP(*(.rtc.pending)) } >RTC
     ASSERT(SIZEOF(.rtc_pending) == 4096, "RTC pending region size")
-    /* Dummy section so that .rodata starts right after the image header
-     * and DROM segment header in the flash image.
-     */
-    .rodata_dummy (NOLOAD): ALIGN(4)
-    {
-        . += 0x18; /* esp_image_header_t at start of flash */
-        . += 0x8;  /* DROM segment header (8 bytes) */
-    } > DROM
-
-    /* Constant global variables, stored in flash (DROM). */
-    .rodata : ALIGN(4)
-    {
-        *(.rodata*)
-        . = ALIGN (4);
-        _drom_end = .;
-    } >DROM
-
     /* Put the stack at the bottom of DRAM, so that the application will
      * crash on stack overflow instead of silently corrupting memory.
      */
@@ -57,6 +40,9 @@ SECTIONS
         . = ALIGN(16);
         . += _stack_size;
         _stack_top = .;
+        . = ALIGN(16);
+        . += DEFINED(__num_stacks) && __num_stacks >= 2 ? _stack_size : 0;
+        _stack1_top = .;
     } >DRAM
 
     /* Global variables that are mutable and zero-initialized. */
@@ -76,6 +62,13 @@ SECTIONS
         _sdata = ABSOLUTE(.);
         *(.data .data.*)
         *(.dram*)
+
+        /* Physical flash offsets patched by the ESP image builder. */
+        _irom_flash_addr = ABSOLUTE(.);
+        LONG(0);
+        _drom_flash_addr = ABSOLUTE(.);
+        LONG(0);
+
         . = ALIGN (4);
         _edata = ABSOLUTE(.);
     } >DRAM
@@ -97,6 +90,8 @@ SECTIONS
         /* Boot entry point and its literals */
         *(.literal.call_start_cpu0)
         *(.text.call_start_cpu0)
+        *(.literal.call_start_cpu1)
+        *(.text.call_start_cpu1)
 
         /* Xtensa exception/interrupt vector table — must be 0x400-aligned */
         . = ALIGN(0x400);
@@ -125,23 +120,57 @@ SECTIONS
         _iram_end = .;
     } >IRAM
 
-    /* Dummy section to put the IROM segment at the correct flash offset. */
+    /* Size of the RAM part of the image. Header, segments, padding to 16 bytes
+     * and the SHA-256 digest, as written by builder/esp.go. */
+    _ram_image_payload_size =
+        0x18 +
+        SIZEOF(.data) +
+        ((SIZEOF(.data) != 0) ? 0x08 : 0) +
+        SIZEOF(.iram) +
+        ((SIZEOF(.iram) != 0) ? 0x08 : 0);
+
+    _ram_image_size =
+        _ram_image_payload_size +
+        16 - (_ram_image_payload_size % 16) +
+        0x20;
+
+    /* The MMU maps 64 KB pages, so the low 16 bits of the IROM VMA must match
+     * its flash offset. IROM follows the RAM part of the image. */
     .text_dummy (NOLOAD): ALIGN(4)
     {
-        . += 0x18;                                                  /* esp_image_header_t */
-        . += SIZEOF(.rodata) + ((SIZEOF(.rodata) != 0) ? 0x8 : 0); /* DROM segment (optional) */
-        . += SIZEOF(.data)   + ((SIZEOF(.data)   != 0) ? 0x8 : 0); /* DRAM segment (optional) */
-        . += SIZEOF(.iram)   + 0x8;                                 /* IRAM segment */
-        . += 0x8;                                                   /* IROM segment header */
-    } > IROM
+        . += _ram_image_size % 0x10000;
+    } >IROM
 
-    /* IROM segment: main code executed from flash via cache. */
+    /* IROM occupies the first entries in the shared flash MMU table. */
     .text : ALIGN(4)
     {
+        _irom_start = .;
         *(.literal .text)
         *(.literal.* .text.*)
+        . = ALIGN(4);
         _irom_end = .;
     } >IROM
+
+    /* DROM uses the MMU entries after IROM, with the same low 16 bit rule. */
+    _irom_mmu_pages =
+        ((_irom_end - ORIGIN(IROM) + 0xFFFF) / 0x10000);
+
+    _drom_flash_offset =
+        _ram_image_size + SIZEOF(.text);
+
+    .rodata_dummy (NOLOAD): ALIGN(4)
+    {
+        . += _irom_mmu_pages * 0x10000;
+        . += _drom_flash_offset % 0x10000;
+    } >DROM
+
+    .rodata : ALIGN(4)
+    {
+        _drom_start = .;
+        *(.rodata*)
+        . = ALIGN(4);
+        _drom_end = .;
+    } >DROM
 
     /DISCARD/ :
     {
@@ -159,7 +188,9 @@ SECTIONS
  */
 _globals_start = _sbss;
 _globals_end = _edata;
-_heap_start = _iram_end - 0x6F0000 - (__init_end - __init_start);
+/* Goroutine stacks come from the heap and need 16 byte alignment
+ * (GCC gcc/config/xtensa/xtensa.h STACK_BOUNDARY). */
+_heap_start = ALIGN(_iram_end - 0x6F0000 - (__init_end - __init_start), 16);
 /* Stop the heap before the ROM BSS/data region.
  * ESP-IDF defines SOC_ROM_STACK_START = 0x3fceb710 as the top of the ROM boot
  * stack.  Everything from 0x3fceb710 up to SOC_DIRAM_DRAM_HIGH (0x3fcf0000)
@@ -174,6 +205,19 @@ _heap_start = _iram_end - 0x6F0000 - (__init_end - __init_start);
 _heap_end = 0x3fceb710;
 
 _stack_size = 4K;
+
+/* MMU entries for esp32s3.S. DROM follows IROM in the shared table, and the
+ * machine.Flash area follows DROM. It starts at the first 4K sector after DROM. */
+_drom_mmu_index = (_drom_start - 0x3C000000) / 0x10000;
+_drom_mmu_pages = (_drom_end - 0x3C000000 + 0xFFFF) / 0x10000 - _drom_mmu_index;
+_drom_flash_start = _drom_flash_offset - _drom_flash_offset % 0x10000 + _drom_start % 0x10000;
+_drom_flash_end = (_drom_flash_start < _drom_flash_offset ? _drom_flash_start + 0x10000 : _drom_flash_start) + (_drom_end - _drom_start);
+__flash_data_phys = ALIGN(_drom_flash_end, 4096);
+_flash_data_phys_end = MAX(__flash_data_phys, 4M);
+_flash_data_mmu_index = _drom_mmu_index + _drom_mmu_pages;
+_flash_data_mmu_pages = (_flash_data_phys_end + 0xFFFF) / 0x10000 - __flash_data_phys / 0x10000;
+PROVIDE(__flash_data_start = 0x3C000000 + _flash_data_mmu_index * 0x10000 + __flash_data_phys % 0x10000);
+PROVIDE(__flash_data_end = __flash_data_start + (_flash_data_phys_end - __flash_data_phys));
 
 /* From ESP-IDF:
  * components/esp_rom/esp32/ld/esp32.rom.newlib-funcs.ld
@@ -306,6 +350,7 @@ ets_install_uart_printf = 0x400005e8;
 ets_install_putc2 = 0x400005f4;
 PROVIDE( ets_delay_us = 0x40000600 );
 ets_get_stack_info = 0x4000060c;
+ets_set_appcpu_boot_addr = 0x40000720;
 ets_install_lock = 0x40000618;
 ets_backup_dma_copy = 0x40000624;
 ets_apb_backup_init_lock_func = 0x40000630;
@@ -328,6 +373,14 @@ assist_debug_clock_enable = 0x400006f0;
 assist_debug_record_enable = 0x400006fc;
 clear_super_wdt_reset_flag = 0x40000708;
 disable_default_watchdog = 0x40000714;
+
+/* SPI flash */
+esp_rom_spiflash_erase_sector = 0x400009fc;
+esp_rom_spiflash_write = 0x40000a14;
+esp_rom_spiflash_read = 0x40000a20;
+esp_rom_spiflash_unlock = 0x40000a2c;
+rom_spiflash_legacy_data = 0x3fceffe4;
+Cache_Invalidate_Addr = 0x400016b0;
 
 /* Interrupt handling */
 intr_matrix_set = 0x40001b54;
@@ -1754,14 +1807,11 @@ phy_param_rom = 0x3fcef81c;
 
 _settings_start = 0x1fe000;
 _settings_end = 0x200000;
-ASSERT((_irom_end - 0x42000000 + 48) <= _settings_start, "image intrudes into settings sectors");
+ASSERT((_drom_flash_end + 48) <= _settings_start, "image intrudes into settings sectors");
+ASSERT(SIZEOF(.data) <= 0x100000 && SIZEOF(.iram) <= 0x100000, "ROM RAM block exceeds 1 MiB");
 Cache_Suspend_ICache = 0x4000189c; /* raw ROM, not IDF patched wrapper */
 Cache_Suspend_DCache = 0x400018b4; /* raw ROM, not IDF patched wrapper */
 Cache_Resume_ICache = 0x400018a8; /* raw ROM, not IDF patched wrapper */
 Cache_Resume_DCache = 0x400018c0; /* raw ROM, not IDF patched wrapper */
 Cache_Invalidate_ICache_All = 0x400016d4; /* raw ROM, not IDF patched wrapper */
 Cache_Invalidate_DCache_All = 0x400016e0; /* raw ROM, not IDF patched wrapper */
-esp_rom_spiflash_read = 0x40000a20; /* raw ROM, not IDF patched wrapper */
-esp_rom_spiflash_write = 0x40000a14; /* raw ROM, not IDF patched wrapper */
-esp_rom_spiflash_erase_sector = 0x400009fc; /* raw ROM, not IDF patched wrapper */
-esp_rom_spiflash_unlock = 0x40000a2c; /* raw ROM, not IDF patched wrapper */

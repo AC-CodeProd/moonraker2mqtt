@@ -1,0 +1,130 @@
+package ipv4
+
+import (
+	"strconv"
+)
+
+const (
+	// RFC791 defines the minimum MTU for an IPv4 packet as 68, meaning a payload of 48 bytes when no IPv4 options included.
+	MinimumMTU = 68
+	sizeHeader = 20
+)
+
+// IsMulticast reports whether addr is an IPv4 multicast address (224.0.0.0/4),
+// i.e. the most significant nibble is 0xE (1110 in binary) as defined in [RFC1112].
+//
+// [RFC1112]: https://datatracker.ietf.org/doc/html/rfc1112
+func IsMulticast(addr [4]byte) bool {
+	return addr[0]&0xf0 == 0xe0
+}
+
+// UnspecifiedAddr returns the unspecified address: 0.0.0.0
+func UnspecifiedAddr() [4]byte { return [4]byte{0, 0, 0, 0} }
+
+// BroadcastAddr returns the broadcast address: 255.255.255.255
+func BroadcastAddr() [4]byte { return [4]byte{255, 255, 255, 255} }
+
+// IsBroadcast reports whether addr is the limited broadcast address
+// 255.255.255.255 used to address all hosts on the local network segment
+// as defined in [RFC919]. It does not detect directed (subnet) broadcast
+// addresses, which depend on the network mask and cannot be determined from
+// the address alone.
+//
+// [RFC919]: https://datatracker.ietf.org/doc/html/rfc919
+func IsBroadcast(addr [4]byte) bool {
+	return addr == BroadcastAddr()
+}
+
+// IsLinkLocal reports whether addr is within the IPv4 link-local prefix
+// 169.254.0.0/16 reserved for dynamic link-local configuration as defined in [RFC3927].
+//
+// [RFC3927]: https://datatracker.ietf.org/doc/html/rfc3927
+func IsLinkLocal(addr [4]byte) bool {
+	return addr[0] == 169 && addr[1] == 254
+}
+
+// ToS represents the Traffic Class (a.k.a Type of Service). It is 8 bits long. 6 MSB are Differentiated Services; 2 LSB are Explicit Congenstion Notification.
+type ToS uint8
+
+// NewToS returns a [ToS] from an Explicit Congestion Notification value and a Differentiated Services Field value.
+func NewToS(ECN, DS uint8) ToS {
+	if ECN > 0b11 || DS > 0b11_1111 {
+		panic("invalid ECN/DS value")
+	}
+	return ToS(ECN | (DS << 2))
+}
+
+// DS returns the top 6 bits of the IPv4 ToS holding the Differentiated Services field
+// which is used to classify packets.
+func (tos ToS) DS() uint8 { return uint8(tos) >> 2 }
+
+// ECN is the Explicit Congestion Notification which provides congestion control and non-congestion control traffic.
+func (tos ToS) ECN() uint8 { return uint8(tos & 0b11) }
+
+// Flags holds fragmentation field data of an IPv4 header. It is 16 bits long.
+type Flags uint16
+
+const (
+	flagIsEvilPos           = 13
+	flagDontFragPos         = 14
+	flagMoreFragPos         = 15
+	FlagOffsetMask          = (1 << flagIsEvilPos) - 1
+	flagIsEvil        Flags = 1 << flagIsEvilPos
+	FlagDontFragment  Flags = 1 << flagDontFragPos
+	FlagMoreFragments Flags = 1 << flagMoreFragPos
+)
+
+func NewFlags(fragOffset uint16, dontFrag, moreFrag bool) Flags {
+	if fragOffset > FlagOffsetMask {
+		panic("invalid NewFlags arg")
+	}
+	return Flags(fragOffset) | Flags(b2u8(dontFrag))<<flagDontFragPos | Flags(b2u8(moreFrag))<<flagMoreFragPos
+}
+
+// IsEvil returns true if evil bit set as per [RFC3514].
+//
+// [RFC3514]: https://datatracker.ietf.org/doc/html/rfc3514
+func (f Flags) IsEvil() bool { return f&flagIsEvil != 0 }
+
+// DontFragment specifies whether the datagram can not be fragmented.
+// This can be used when sending packets to a host that does not have resources to perform reassembly of fragments.
+// If the DontFragment(DF) flag is set, and fragmentation is required to route the packet, then the packet is dropped.
+func (f Flags) DontFragment() bool { return f&FlagDontFragment != 0 }
+
+// MoreFragments is cleared for unfragmented packets.
+// For fragmented packets, all fragments except the last have the MF flag set.
+// The last fragment has a non-zero Fragment Offset field, so it can still be differentiated from an unfragmented packet.
+func (f Flags) MoreFragments() bool { return f&FlagMoreFragments != 0 }
+
+// FragmentOffset specifies the offset of a particular fragment relative to the beginning of the original unfragmented IP datagram.
+// Fragments are specified in units of 8 bytes, which is why fragment lengths are always a multiple of 8; except the last, which may be smaller.
+// The fragmentation offset value for the first fragment is always 0.
+func (f Flags) FragmentOffset() uint16 { return uint16(f) & FlagOffsetMask }
+
+func b2u8(b bool) uint8 {
+	if b {
+		return 1
+	}
+	return 0
+}
+
+// AppendFormatAddr appends the dotted-decimal text representation of an IPv4 address
+// to dst. Zero heap allocations.
+func AppendFormatAddr(dst []byte, addr [4]byte) []byte {
+	for i, b := range addr {
+		if i != 0 {
+			dst = append(dst, '.')
+		}
+		dst = strconv.AppendUint(dst, uint64(b), 10)
+	}
+	return dst
+}
+
+// String returns the dotted-decimal text representation of an IPv4 address.
+func String(addr [4]byte) string {
+	// See net/netip's (Addr).string4 pattern.
+	var buf [maxAddrStringLen]byte
+	return string(AppendFormatAddr(buf[:0], addr))
+}
+
+const maxAddrStringLen = len("255.255.255.255")
