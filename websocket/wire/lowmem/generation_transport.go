@@ -7,8 +7,8 @@ import (
 )
 
 // Only the Moonraker bounded dial owns this wrapper, never MQTT or global netdev.
-// Native active clients are freshly allocated, not pooled; all workers must join
-// before the lifecycle drops this wrapper or dials a replacement generation.
+// Stream wrappers are generation-specific; the first-party native owner retains
+// its Conn/buffers. All workers join before native retirement/reuse.
 type generationTransport struct {
 	net.Conn
 	interrupt func() error

@@ -3,17 +3,22 @@
 package mqtt
 
 import (
-	"github.com/soypat/lneto/tcp"
 	"io"
 	"net"
 	"os"
 	"sync"
+	"time"
 
 	"unsafe"
 )
 
 // TransportDiagnostics is opt-in. No endpoints, payloads or error strings.
 var TransportDiagnostics = "false"
+
+// Application-owned monotonic epoch, not lneto's former diagnostic clock.
+var transportEpoch = time.Now()
+
+func transportNow() int64 { return time.Since(transportEpoch).Nanoseconds() }
 
 // Independent of wire.mu: caller may already own wire.mu, and RX/Close must
 // not wait for a blocked Write. Fields are accessed only while mu is held.
@@ -74,7 +79,7 @@ func (c *packetConn) observeWrite(site uint8, requested, written int, remaining 
 			c.diag.writeSeen = true
 		}
 		c.diag.seq++
-		println("TMW3:", uintptr(unsafe.Pointer(c)), c.diag.seq, site, requested, written, remaining, diagCode(err), setter, tcp.DiagnosticNow())
+		println("TMW4:", uintptr(unsafe.Pointer(c)), c.diag.seq, site, requested, written, remaining, diagCode(err), setter, transportNow())
 	}
 	c.diag.mu.Unlock()
 }
@@ -99,15 +104,15 @@ func (c *packetConn) closeCause(site uint8) error {
 	if first {
 		c.diag.closeSeen = true
 		c.diag.seq++
-		println("TMC2:", uintptr(unsafe.Pointer(c)), c.diag.seq, site, 1, 0, tcp.DiagnosticNow())
+		println("TMC3:", uintptr(unsafe.Pointer(c)), c.diag.seq, site, 1, 0, transportNow())
 	}
 	c.diag.mu.Unlock()
 	err := c.Conn.Close()
-	returned := tcp.DiagnosticNow()
+	returned := transportNow()
 	if first {
 		c.diag.mu.Lock()
 		c.diag.seq++
-		println("TMC2:", uintptr(unsafe.Pointer(c)), c.diag.seq, site, 2, diagCode(err), returned)
+		println("TMC3:", uintptr(unsafe.Pointer(c)), c.diag.seq, site, 2, diagCode(err), returned)
 		c.diag.mu.Unlock()
 	}
 	return err

@@ -11,6 +11,7 @@ import (
 	"github.com/soypat/lneto"
 	"github.com/soypat/lneto/tcp"
 	"github.com/soypat/lneto/x/xnet"
+	"moonraker2mqtt/internal/nativetcp"
 
 	"net"
 	"net/http"
@@ -30,9 +31,13 @@ func TestNativeSocketThroughBoundedWebSocketHTTP(t *testing.T) {
 	client.SetGatewayHardwareAddr(server.HardwareAddr())
 	server.SetGatewayHardwareAddr(client.HardwareAddr())
 	backoff := lneto.BackoffStrategy(func(uint) time.Duration { return time.Millisecond })
-	sg := client.StackGo(backoff, xnet.StackGoConfig{ListenerPoolConfig: xnet.TCPPoolConfig{PoolSize: 2, QueueSize: 4, TxBufSize: 4096, RxBufSize: 1024, NewBackoff: func() lneto.BackoffStrategy { return backoff }}})
-	owner := xnet.NewNativeDialOwner(sg)
-	remote := net.TCPAddrFromAddrPort(netip.MustParseAddrPort("10.0.0.2:8080"))
+	public := &nativetcp.PublicStack{Stack: client}
+	peerPublic := &nativetcp.PublicStack{Stack: server}
+	owner, err := public.NewOwner()
+	if err != nil {
+		t.Fatal(err)
+	}
+	remote := netip.MustParseAddrPort("10.0.0.2:8080")
 	stop, pumpDone := make(chan struct{}), make(chan struct{})
 	go func() {
 		defer close(pumpDone)
@@ -43,13 +48,14 @@ func TestNativeSocketThroughBoundedWebSocketHTTP(t *testing.T) {
 				return
 			default:
 			}
-			n, _ := client.EgressEthernet(b)
+			var n int
+			public.Pump(func() { n, _ = client.EgressEthernet(b) })
 			if n > 0 {
-				_ = server.IngressEthernet(b[:n])
+				peerPublic.Pump(func() { _ = server.IngressEthernet(b[:n]) })
 			}
-			n, _ = server.EgressEthernet(b)
+			peerPublic.Pump(func() { n, _ = server.EgressEthernet(b) })
 			if n > 0 {
-				_ = client.IngressEthernet(b[:n])
+				public.Pump(func() { _ = client.IngressEthernet(b[:n]) })
 			}
 			time.Sleep(time.Millisecond)
 		}
@@ -59,8 +65,7 @@ func TestNativeSocketThroughBoundedWebSocketHTTP(t *testing.T) {
 	buffers.Init()
 	pair := buffers.pair
 	seen := map[string]bool{}
-	var first [4]any
-	var prior *tcp.Conn
+	var prior net.Conn
 	for i := 0; i < 8; i++ {
 		sc := new(tcp.Conn)
 		if e := sc.Configure(tcp.ConnConfig{TxBuf: make([]byte, 4096), RxBuf: make([]byte, 1024), TxPacketQueueSize: 4, RWBackoff: backoff}); e != nil {
@@ -108,22 +113,19 @@ func TestNativeSocketThroughBoundedWebSocketHTTP(t *testing.T) {
 			t.Fatal(e)
 		}
 		cfg.OwnedDialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
-			stream, e := owner.DialContext(ctx, network, remote)
+			stream, e := owner.DialAddr(ctx, remote)
 			if e != nil {
 				return nil, e
 			}
-			return xnet.BindStream(stream, remote), nil
+			if prior != nil {
+				if _, err := prior.Write([]byte("stale")); err != net.ErrClosed {
+					t.Error("old generation wrote after reuse", err)
+				}
+			}
+			prior = stream
+			return stream, nil
 		}
 		ws, e := cfg.DialBoundedWithBuffers(context.Background(), time.Second, func(net.Conn) {}, &buffers)
-		native, token, backings, caps := owner.FixtureOwnerSnapshot()
-		if native == prior || token != uint64(i+1) || caps != [4]int{4096, 1024, 4, 8} {
-			t.Fatal("native identity/token/geometry changed incorrectly", token, caps)
-		}
-		if i == 0 {
-			first = backings
-		} else if first != backings {
-			t.Fatal("real TCP -> TinyGo -> WS -> HTTP route renewed native backing")
-		}
 		if bad {
 			if e == nil {
 				t.Fatal("HTTP403 accepted")
@@ -152,8 +154,7 @@ func TestNativeSocketThroughBoundedWebSocketHTTP(t *testing.T) {
 		if buffers.pair != pair {
 			t.Fatal("bufio pair reallocated")
 		}
-		server.FixtureAbortTCP(sc)
-		prior = native
+		peerPublic.Pump(func() { sc.Abort() })
 	}
-	t.Log("REACHED bounded WebSocket real TCP Socket/Configure -> verbatim TinyGo capability methods -> real Berkeley -> HTTP101/403, nonce, prefetched frames, GC, stable native/bufio ownership")
+	t.Log("REACHED public Configure/DialTCP/Abort -> bounded WebSocket HTTP101/403, nonce, prefetched frames, GC, stale generation rejected and stable bufio ownership")
 }

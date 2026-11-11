@@ -412,16 +412,18 @@ The build uses **stock TinyGo 0.44.0 / Go 1.27.3 / LLVM 22.1.4** from
 `tinygo/tinygo@sha256:7362ad526b5ed1b675cd7a101f295eb3e3d6d7aa32106a6a88fc49d7dc7f252f`
 (ARM64). No Go/TinyGo library, runtime or compiler sources are replaced.
 Preload this exact image and populate the pinned module cache with `go mod download`;
-the firmware build never pulls an image or downloads dependencies. Only the
-source-distributed `third_party/lneto` and `third_party/natiu-mqtt` network forks
-are selected by `go.mod`.
+the firmware build never pulls an image or downloads dependencies. `go.mod`
+selects the official modules `github.com/soypat/lneto v0.3.2` and
+`github.com/soypat/natiu-mqtt v0.7.0`, without replace directives or vendored
+copies. The radio remains pinned to
+`tinygo.org/x/espradio v0.0.0-20260930175736-9a37b24578da`.
 
 `make firmware` mounts sources and modules read-only, disables networking, drops
 capabilities, and runs as the invoking user with fresh writable caches in a new
 private `FIRMWARE_OUTPUT` directory (default `build/stock-tinygo-0.44.0`). Choose a
 new output directory for every build. It produces **`firmware.elf` and
 `firmware-raw.bin`, not an installation-ready image**. Exited build containers
-are retained for inspection. The default `targets/esp32s3-settings.json` inherits
+are removed automatically. The default `targets/esp32s3-settings.json` inherits
 `esp32s3-supermini`, retaining the application linker, settings sectors, RTC
 NOLOAD reservation and IRAM vectors. No usable PSRAM, second core or board LED
 is assumed.
@@ -468,10 +470,28 @@ interrupted repair may lose both old records; no automatic repair/retry occurs.
 The stock adaptation retains bounded MQTT subscriptions, streamed payloads,
 borrowed WebSocket receive buffers, typed Klippy-state decoding with collision
 fallback, reusable protocol workers and owned native TCP storage. Protocol
-connections use an explicit lneto `net.Conn` adapter, not private additions to
-TinyGo's `net` package. Its generation interrupt and retirement capabilities
-remain in the network dependency; ordinary setup HTTP uses stock `net`.
-The adapter reports an unknown (`nil`) local endpoint rather than inventing one.
+connections use a first-party `internal/nativetcp` adapter over public lneto
+`Conn.Configure`, `StackAsync.DialTCP` and `Conn.Abort`, not private additions
+to TinyGo's `net`. Each protocol retains TX4096/RX1024/queue4 and one native
+Conn. Retirement revokes admission, joins the frame-pump gate, aborts and drains
+admitted calls before reopening; generation tokens reject stale streams and
+setters. Invalid upstream registrations are bounded by the two TCP port slots
+and compacted by public registration, not by a private detach API. Setup HTTP
+still uses stock `net`; the adapter reports the configured local address.
+
+The four exact-topic handlers are unchanged. An additional **16 SUBSCRIBE
+requests per native MQTT client** budget allows four complete four-handler
+rounds. Success, rejection and wrong-ID responses all consume a token. Before
+request 17, the transport is closed and a recoverable error forces the ordinary
+same-boot session path to join workers, create a fresh official Client, reconnect,
+resubscribe and synchronize publications, even if the broker was healthy.
+Unsolicited, malformed or wrong-ID SUBACK ends the receive generation before
+another packet is decoded: a native append before application validation is
+included in the bound. No SUBACK bytes are rewritten and no replacement MQTT
+client is implemented. The session's existing 10-second grace remains unchanged.
+This bounds a specific history/lifecycle resource, **not total heap or OOM risk**.
+Transport diagnostics use application-clock TMW4/TMC3 events, not native clock
+hooks; legacy native diagnostic/ELF bindings do not apply.
 
 **JSON publication now always owns a standard `json.Marshal` result**, including
 on the MCU. Publication remains synchronous, but the final owned JSON copy and

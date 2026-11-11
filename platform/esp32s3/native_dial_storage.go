@@ -5,16 +5,16 @@ package esp32s3
 import (
 	"context"
 	"errors"
-	"github.com/soypat/lneto/x/xnet"
 	"moonraker2mqtt/internal/nativetcp"
 	"moonraker2mqtt/platform/esp32s3/network"
 	"net"
+	"net/netip"
 	"strconv"
 )
 
 type radioDialStorage struct {
 	radio *radioLink
-	owner *xnet.NativeDialOwner
+	owner *nativetcp.PublicOwner
 }
 
 // newNativeDialOwner uses the application adapter and the selected lneto stack.
@@ -23,7 +23,11 @@ func (n *radioLink) newNativeDialOwner() (nativetcp.Owner, error) {
 	if !n.connected() || n.StackBerkeley == nil {
 		return nil, network.ErrDown
 	}
-	return &radioDialStorage{radio: n, owner: xnet.NewNativeDialOwner(n.goStack)}, nil
+	owner, err := n.publicTCP.NewOwner()
+	if err != nil {
+		return nil, err
+	}
+	return &radioDialStorage{radio: n, owner: owner}, nil
 }
 func (d *radioDialStorage) DialContext(ctx context.Context, networkName, address string) (net.Conn, error) {
 	if ctx.Err() != nil {
@@ -47,11 +51,6 @@ func (d *radioDialStorage) DialContext(ctx context.Context, networkName, address
 	if !ip.Is4() {
 		return nil, errors.New("owned native dial requires IPv4")
 	}
-	remote := &net.TCPAddr{IP: ip.AsSlice(), Port: port}
-	stream, err := d.owner.DialContext(ctx, networkName, remote)
-	if err != nil {
-		return nil, err
-	}
-	return xnet.BindStream(stream, remote), nil
+	return d.owner.DialAddr(ctx, netip.AddrPortFrom(ip, uint16(port)))
 }
 func (d *radioDialStorage) Retire() error { return d.owner.Retire() }

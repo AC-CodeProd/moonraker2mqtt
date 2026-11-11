@@ -23,6 +23,11 @@ import (
 
 const MaxPayload = 4096
 const maxSubscriptions = 4
+
+// Four complete rounds of the existing four-handler capacity per native
+// client. Every request consumes a token, not just successful acknowledgements.
+// Exhaustion is a recoverable same-boot session boundary, never an ESP reboot.
+const subscriptionBudget = 4 * maxSubscriptions
 const receiveIdleTimeout = 2 * time.Second
 const receiveProgressTimeout = 2 * time.Second
 const receivePacketTimeout = 10 * time.Second
@@ -61,11 +66,14 @@ type NatiuClient struct {
 // packetConn serializes complete wire writes, including the standalone UNSUBSCRIBE.
 type packetConn struct {
 	net.Conn
-	mu        sync.Mutex
-	diag      transportDiagnostic
-	stopMu    sync.Mutex
-	closed    bool
-	interrupt func() error
+	mu          sync.Mutex
+	diag        transportDiagnostic
+	stopMu      sync.Mutex
+	closed      bool
+	interrupt   func() error
+	subRequests uint8 // protected by stopMu
+	subPending  bool
+	subID       uint16
 
 	txPrefix [7]byte // fixed header + topic length; owned by mu
 	// Receive state is owned only by the decoder goroutine. During CONNECT
@@ -252,11 +260,9 @@ func (c *NatiuClient) ConnectContext(ctx context.Context) error {
 		println("TMA2:", uintptr(unsafe.Pointer(wire)), diagnosticFD(raw))
 	}
 	c.connectStage = 2
-	// handlers is the bounded authoritative subscription registry. Native's
-	// append-only history is unused and grows even for an ID-mismatched SUBACK
-	// rejected below. Keep current wire ID/code validation and handler rollback;
-	// omit only that redundant history, including across successful resubscribe.
-	client := native.NewClient(native.ClientConfig{DisableSubscriptionHistory: true, Decoder: native.DecoderNoAlloc{UserBuffer: l.decoder}, OnPub: func(h native.Header, v native.VariablesPublish, r io.Reader) error {
+	// Official natiu retains subscription history; the first-party budget below
+	// bounds requests per native client, including rejected/wrong-ID responses.
+	client := native.NewClient(native.ClientConfig{Decoder: native.DecoderNoAlloc{UserBuffer: l.decoder}, OnPub: func(h native.Header, v native.VariablesPublish, r io.Reader) error {
 		data, err := readPublishPayload(h, v, r)
 		if err != nil {
 			return err
@@ -326,10 +332,28 @@ func (c *NatiuClient) readLoop(client *native.Client, wire *packetConn, queue ch
 			pingPackets++
 			lastPacketType = wire.prefix[0] >> 4
 		}
-		if ack, ok := wire.suback(); ok {
+		if wire.prefixLen > 0 && wire.prefix[0]>>4 == 9 {
+			ack, ok := wire.suback()
+			wire.stopMu.Lock()
+			valid := ok && wire.subPending && ack.id == wire.subID
+			wire.subPending = false
+			wire.stopMu.Unlock()
+			// Native has already decoded (and may have appended one entry).
+			// Never decode another packet after unsolicited/malformed/wrong-ID
+			// SUBACK. No wire rewriting and no decoder substitution is involved.
+			if !valid {
+				_ = wire.closeCause(9)
+				_ = client.Disconnect(errors.New("MQTT unsolicited or invalid SUBACK"))
+			}
+			if !ok {
+				break
+			}
 			select {
 			case c.subacks <- ack:
 			default:
+			}
+			if !valid {
+				break
 			}
 		}
 		if !pingAt.IsZero() && !client.AwaitingPingresp() {
@@ -354,6 +378,7 @@ func (c *NatiuClient) readLoop(client *native.Client, wire *packetConn, queue ch
 		}
 	}
 	if client.IsConnected() {
+		_ = wire.closeCause(3)
 		client.Disconnect(errors.New("MQTT transport stopped"))
 	}
 }
@@ -469,7 +494,21 @@ func (c *NatiuClient) Subscribe(topic string, handler MessageHandler) error {
 	}()
 	wire.SetWriteDeadline(time.Now().Add(10 * time.Second))
 	id := c.nextID()
+	wire.stopMu.Lock()
+	exhausted := wire.subRequests >= subscriptionBudget
+	if !exhausted {
+		wire.subRequests++
+		wire.subPending = true
+		wire.subID = id
+	}
+	wire.stopMu.Unlock()
+	if exhausted {
+		_ = wire.closeCause(9)
+		_ = client.Disconnect(errors.New("MQTT subscription budget exhausted; reconnect required"))
+		return errors.New("MQTT subscription budget exhausted; reconnect required")
+	}
 	if err := client.StartSubscribe(native.VariablesSubscribe{PacketIdentifier: id, TopicFilters: []native.SubscribeRequest{{TopicFilter: []byte(topic), QoS: native.QoS0}}}); err != nil {
+		_ = wire.closeCause(9)
 		return err
 	}
 	timer := time.NewTimer(10 * time.Second)
@@ -487,6 +526,7 @@ func (c *NatiuClient) Subscribe(topic string, handler MessageHandler) error {
 	case <-c.done:
 		return errors.New("MQTT disconnected during subscription")
 	case <-timer.C:
+		_ = wire.closeCause(9)
 		return errors.New("MQTT subscription timeout")
 	}
 }

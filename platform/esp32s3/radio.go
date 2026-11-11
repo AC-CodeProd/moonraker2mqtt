@@ -31,6 +31,7 @@ type radioLink struct {
 	stack              *espradio.Stack
 	device             *espradio.NetDev
 	goStack            xnet.StackGo
+	publicTCP          nativetcp.PublicStack
 	stopPump, pumpDone chan struct{}
 	notify             func(nl.Event)
 }
@@ -155,6 +156,7 @@ func (n *radioLink) openStack(nd *espradio.NetDev, cfg espradio.StackConfig) err
 		return err
 	}
 	n.stack, n.device = stack, nd
+	n.publicTCP.Stack = stack.LnetoStack()
 	n.goStack = network.GoStack(stack.LnetoStack())
 	n.StackBerkeley = xnet.NewBerkeleyStack(n.goStack.Socket)
 	stop, done := make(chan struct{}), make(chan struct{})
@@ -167,7 +169,8 @@ func (n *radioLink) openStack(nd *espradio.NetDev, cfg espradio.StackConfig) err
 				return
 			default:
 			}
-			sent, received, _ := stack.RecvAndSend()
+			var sent, received int
+			n.publicTCP.Pump(func() { sent, received, _ = stack.RecvAndSend() })
 			if sent == 0 && received == 0 {
 				time.Sleep(network.PollInterval)
 			}

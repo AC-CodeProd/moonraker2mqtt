@@ -412,16 +412,17 @@ image ARM64 exacte
 `tinygo/tinygo@sha256:7362ad526b5ed1b675cd7a101f295eb3e3d6d7aa32106a6a88fc49d7dc7f252f`.
 Aucune bibliothèque Go/TinyGo, aucun runtime ni compilateur n'est remplacé.
 Précharger cette image et le cache des modules épinglés (`go mod download`) :
-la compilation firmware ne télécharge ni image ni dépendance. Seules les
-adaptations réseau distribuées dans `third_party/lneto` et
-`third_party/natiu-mqtt` sont sélectionnées par `go.mod`.
+la compilation firmware ne télécharge ni image ni dépendance. `go.mod` sélectionne
+les modules officiels `github.com/soypat/lneto v0.3.2` et
+`github.com/soypat/natiu-mqtt v0.7.0`, sans replace ni copie vendue. Le pilote
+radio conserve `tinygo.org/x/espradio v0.0.0-20260930175736-9a37b24578da`.
 
 `make firmware` monte sources et modules en lecture seule, coupe le réseau,
 retire les capacités et utilise l'UID courant avec des caches neufs dans un
 répertoire privé `FIRMWARE_OUTPUT` (`build/stock-tinygo-0.44.0` par défaut).
 Choisir un nouveau répertoire à chaque compilation. Les sorties sont
 **`firmware.elf` et `firmware-raw.bin`, pas une image prête à installer**.
-Les conteneurs arrêtés sont conservés pour inspection. La cible par défaut
+Les conteneurs arrêtés sont supprimés automatiquement. La cible par défaut
 `targets/esp32s3-settings.json` hérite de `esp32s3-supermini` et conserve le
 linker applicatif, les secteurs réservés, la RTC NOLOAD et les vecteurs IRAM.
 Ni PSRAM utilisable, second cœur ni LED ne sont supposés.
@@ -473,11 +474,30 @@ automatique.
 L'adaptation standard conserve les abonnements MQTT bornés, les payloads en
 flux, les buffers de réception WebSocket empruntés, le décodage typé de l'état
 Klippy avec repli en cas de collision, les workers réutilisables et la réservation
-TCP native. Les connexions protocolaires passent par un adaptateur lneto
-implémentant l'interface publique `net.Conn`, sans extension privée de `net`
-TinyGo. Interruption de génération et retrait du stockage restent dans la
-dépendance réseau ; le HTTP du portail utilise le `net` standard. L'adresse
-locale non exposée est signalée inconnue (`nil`), pas inventée.
+TCP native. Les connexions passent par l'adaptateur applicatif
+`internal/nativetcp` utilisant uniquement `Conn.Configure`, `StackAsync.DialTCP`
+et `Conn.Abort` publics, sans extension privée du `net` TinyGo. Chaque protocole
+conserve TX4096/RX1024/file4 et un Conn natif. Le retrait ferme les admissions,
+joint la barrière de pompe réseau, interrompt puis draine les appels admis avant
+réouverture ; les jetons de génération refusent flux et setters périmés. Les
+enregistrements natifs invalidés restent bornés par les deux ports TCP puis sont
+compactés lors d'un enregistrement public, sans API privée de détachement.
+Le HTTP du portail conserve le `net` standard ; l'adresse locale configurée est
+exposée par l'adaptateur.
+
+La capacité des quatre handlers exacts est conservée. Un budget supplémentaire
+de **16 demandes SUBSCRIBE par client MQTT natif** permet quatre tours complets
+des quatre handlers. Succès, rejet et mauvais identifiant consomment un jeton.
+Avant la demande 17, fermeture du transport et erreur récupérable : le chemin
+normal de session, dans le même boot, joint les workers, crée un Client officiel
+neuf, reconnecte, réabonne et synchronise les publications, même si le broker
+était sain. Un SUBACK non sollicité, mal formé ou de mauvais ID termine la
+génération avant décodage du paquet suivant ; l'ajout natif précédant la
+validation applicative est inclus dans la borne. Ni réécriture des SUBACK ni
+client MQTT alternatif. La grâce de session existante de 10 secondes ne change
+pas. Cette borne précise d'historique/cycle de vie **ne garantit pas le pic
+mémoire ni l'absence d'OOM**. Les événements TMW4/TMC3 utilisent l'horloge
+applicative ; les anciens bindings natifs de diagnostic/ELF ne s'appliquent plus.
 
 **La publication JSON possède maintenant toujours le résultat de `json.Marshal`
 standard**, y compris sur MCU. La publication reste synchrone, mais réintroduit

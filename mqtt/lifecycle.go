@@ -111,8 +111,8 @@ func (c *NatiuClient) failedConnect(g *mqttGeneration, err error) error {
 
 // ops excludes Publish/Subscribe/Connect before this barrier; the cancellation
 // worker interrupts without ops or the packet write mutex. App workers finish
-// before NativeDialOwner closes admissions, detaches callbacks/FD and drains
-// native ingress/egress/lookup snapshots. Only then can storage be rebound.
+// before the first-party native owner revokes admissions, joins the frame
+// gate, aborts and drains admitted calls. Only then can storage be rebound.
 func (c *NatiuClient) retireMQTT() error {
 	l := &c.lifecycle
 	g := l.active

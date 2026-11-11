@@ -1,9 +1,0 @@
-# Local natiu-mqtt v0.7.0 subscription-history option
-
-Provenance: exact offline pinned module `github.com/soypat/natiu-mqtt@v0.7.0`, copied with its original license and sources. The external `inputs/fork-upstream-provenance.json` records the complete upstream inventory and the prepatch private copy. No upstream cache was changed.
-
-Change: `ClientConfig.DisableSubscriptionHistory` (zero value false) prevents initialization and append of the native informational `activeSubs` history. The native decoder, pending-SUBACK processing, QoS validation, transport and default behavior remain unchanged. This does not repair general upstream packet-ID validation. It is an opt-in storage policy for the firmware adapter, which independently validates the *current wire* SUBACK ID and code and owns a bounded four-topic handler registry with rollback. No supported subscription capacity or delivery queue is reduced.
-
-Reason: native history is append-only, also records a code-0 acknowledgement with a mismatched identifier before the firmware adapter rejects it, and is not pruned by the adapter's wire-level UNSUBSCRIBE. Keeping unused history therefore creates an unbounded strong root on a healthy generation during retry. The firmware never uses `SubscribedTopics` for acceptance; omission removes this root, including repeated accepted resubscriptions and unique subscribe/unsubscribe churn. One pending native request remains, as before; this is not an allocation-free client or a whole-firmware memory bound.
-
-Scope: local source candidate only. No firmware image is inherited as a new build, no hardware evidence, no installation/capture authorization, no historical OOM attribution. Hosted Paho remains unchanged and does not import this module in its selected dependency graph. Exact-target layout and image/profile qualification remain separate gates.
