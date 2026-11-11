@@ -7,6 +7,7 @@ package websocket
 import (
 	"bytes"
 	"crypto/rand"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -64,8 +65,61 @@ func (h *testCtrlAndDataHandler) WritePing(b []byte) (int, error) {
 		return 0, err
 	}
 	n, err := w.Write(b)
-	w.Close()
+	closeErr := w.Close()
+	if err == nil {
+		err = closeErr
+	}
 	return n, err
+}
+
+type pingErrorWriter struct {
+	writeErr, closeErr error
+	closes             int
+}
+
+func (w *pingErrorWriter) Write(b []byte) (int, error) {
+	if w.writeErr != nil {
+		return 0, w.writeErr
+	}
+	return len(b), nil
+}
+func (w *pingErrorWriter) Close() error { w.closes++; return w.closeErr }
+
+type pingErrorFactory struct {
+	w      *pingErrorWriter
+	opcode byte
+}
+
+func (f *pingErrorFactory) NewFrameWriter(opcode byte) (frameWriter, error) {
+	f.opcode = opcode
+	return f.w, nil
+}
+
+func TestWritePingPropagatesFrameErrors(t *testing.T) {
+	writeErr, closeErr := errors.New("injected write error"), errors.New("injected flush error")
+	for _, tc := range []struct {
+		name                     string
+		writeErr, closeErr, want error
+		wantN                    int
+	}{
+		{"success", nil, nil, nil, 4},
+		{"write", writeErr, nil, writeErr, 0},
+		{"flush", nil, closeErr, closeErr, 4},
+		{"write wins over flush", writeErr, closeErr, writeErr, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			w := &pingErrorWriter{writeErr: tc.writeErr, closeErr: tc.closeErr}
+			f := &pingErrorFactory{w: w}
+			h := &testCtrlAndDataHandler{hybiFrameHandler: hybiFrameHandler{conn: &Conn{frameWriterFactory: f}}}
+			n, err := h.WritePing([]byte("ping"))
+			if n != tc.wantN || !errors.Is(err, tc.want) {
+				t.Fatalf("WritePing = (%d, %v), want (%d, %v)", n, err, tc.wantN, tc.want)
+			}
+			if f.opcode != PingFrame || w.closes != 1 {
+				t.Fatalf("opcode=%d closes=%d, want ping and exactly one close", f.opcode, w.closes)
+			}
+		})
+	}
 }
 
 func ctrlAndDataServer(ws *Conn) {
@@ -136,6 +190,13 @@ func newConfig(t *testing.T, path string) *Config {
 	return config
 }
 
+func closeTestWebSocket(t *testing.T, ws *Conn) {
+	t.Helper()
+	if err := ws.Close(); err != nil {
+		t.Errorf("close client WebSocket: %v", err)
+	}
+}
+
 func TestEcho(t *testing.T) {
 	once.Do(startServer)
 
@@ -163,7 +224,7 @@ func TestEcho(t *testing.T) {
 	if !bytes.Equal(msg, actual_msg) {
 		t.Errorf("Echo: expected %q got %q", msg, actual_msg)
 	}
-	conn.Close()
+	closeTestWebSocket(t, conn)
 }
 
 func TestAddr(t *testing.T) {
@@ -188,7 +249,7 @@ func TestAddr(t *testing.T) {
 	if !strings.HasPrefix(la, "http://") {
 		t.Errorf("Bad local addr: %v", la)
 	}
-	conn.Close()
+	closeTestWebSocket(t, conn)
 }
 
 func TestCount(t *testing.T) {
@@ -231,7 +292,7 @@ func TestCount(t *testing.T) {
 	if count.S != "hellohello" {
 		t.Errorf("count: expected %q got %q", "hellohello", count.S)
 	}
-	conn.Close()
+	closeTestWebSocket(t, conn)
 }
 
 func TestWithQuery(t *testing.T) {
@@ -253,7 +314,7 @@ func TestWithQuery(t *testing.T) {
 		t.Errorf("WebSocket handshake: %v", err)
 		return
 	}
-	ws.Close()
+	closeTestWebSocket(t, ws)
 }
 
 func testWithProtocol(t *testing.T, subproto []string) (string, error) {
@@ -340,7 +401,7 @@ func TestTrailingSpaces(t *testing.T) {
 			t.Errorf("Dial #%d failed: %v", i, err)
 			break
 		}
-		ws.Close()
+		closeTestWebSocket(t, ws)
 	}
 }
 
@@ -418,7 +479,7 @@ func TestSmallBuffer(t *testing.T) {
 	if !bytes.Equal(msg[len(small_msg):], second_msg) {
 		t.Errorf("Echo: expected %q got %q", msg[len(small_msg):], second_msg)
 	}
-	conn.Close()
+	closeTestWebSocket(t, conn)
 }
 
 var parseAuthorityTests = []struct {
@@ -525,7 +586,9 @@ func TestClose(t *testing.T) {
 
 	// set the deadline to ten minutes ago, which will have expired by the time
 	// client.Close sends the close status frame.
-	conn.SetDeadline(time.Now().Add(-10 * time.Minute))
+	if err := conn.SetDeadline(time.Now().Add(-10 * time.Minute)); err != nil {
+		t.Fatalf("set expired deadline: %v", err)
+	}
 
 	if err := client.Close(); err == nil {
 		t.Errorf("ws.Close(): expected error, got %v", err)
@@ -582,7 +645,7 @@ func TestCtrlAndData(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer ws.Close()
+	defer closeTestWebSocket(t, ws)
 
 	h := &testCtrlAndDataHandler{hybiFrameHandler: hybiFrameHandler{conn: ws}}
 	ws.frameHandler = h
@@ -620,7 +683,9 @@ func TestCodec_ReceiveLimited(t *testing.T) {
 		2048, // this one is to make sure next receive recovers discarding leftovers
 	} {
 		b := make([]byte, size)
-		rand.Read(b)
+		if n, err := rand.Read(b); err != nil || n != len(b) {
+			t.Fatalf("generate payload: n=%d err=%v", n, err)
+		}
 		payloads = append(payloads, b)
 	}
 	handlerDone := make(chan struct{})

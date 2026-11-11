@@ -292,10 +292,15 @@ Sec-WebSocket-Version: 9
 func testHybiFrame(t *testing.T, testHeader, testPayload, testMaskedPayload []byte, frameHeader *hybiFrameHeader) {
 	b := bytes.NewBuffer([]byte{})
 	frameWriterFactory := &hybiFrameWriterFactory{bufio.NewWriter(b), false}
-	w, _ := frameWriterFactory.NewFrameWriter(TextFrame)
+	w, err := frameWriterFactory.NewFrameWriter(TextFrame)
+	if err != nil {
+		t.Fatalf("create frame writer: %v", err)
+	}
 	w.(*hybiFrameWriter).header = frameHeader
-	_, err := w.Write(testPayload)
-	w.Close()
+	_, err = w.Write(testPayload)
+	if closeErr := w.Close(); closeErr != nil {
+		t.Errorf("close frame writer: %v", closeErr)
+	}
 	if err != nil {
 		t.Errorf("Write error %q", err)
 	}
