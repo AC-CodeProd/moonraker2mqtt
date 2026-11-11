@@ -72,6 +72,7 @@ type hybiFrameHeader struct {
 // A hybiFrameReader is a reader for hybi frame.
 type hybiFrameReader struct {
 	reader io.Reader
+	proof *proofStream
 
 	header hybiFrameHeader
 	pos    int64
@@ -86,6 +87,7 @@ func (frame *hybiFrameReader) Read(msg []byte) (n int, err error) {
 			frame.pos++
 		}
 	}
+	frame.proof.readFrame(msg[:n])
 	return n, err
 }
 
@@ -108,6 +110,7 @@ func (frame *hybiFrameReader) Len() (n int) { return frame.length }
 // A hybiFrameReaderFactory creates new frame reader based on its frame type.
 type hybiFrameReaderFactory struct {
 	*bufio.Reader
+	proof *proofStream
 }
 
 // NewFrameReader reads a frame header from the connection, and creates new reader for the frame.
@@ -173,6 +176,8 @@ func (buf hybiFrameReaderFactory) NewFrameReader() (frame frameReader, err error
 	hybiFrame.reader = io.LimitReader(buf.Reader, hybiFrame.header.Length)
 	hybiFrame.header.data = bytes.NewBuffer(header)
 	hybiFrame.length = len(header) + int(hybiFrame.header.Length)
+	hybiFrame.proof = buf.proof
+	buf.proof.beginFrame(header, uint64(hybiFrame.header.Length))
 	return
 }
 
@@ -338,7 +343,7 @@ func newHybiConn(config *Config, buf *bufio.ReadWriter, rwc io.ReadWriteCloser, 
 		buf = bufio.NewReadWriter(br, bw)
 	}
 	ws := &Conn{config: config, request: request, buf: buf, rwc: rwc,
-		frameReaderFactory: hybiFrameReaderFactory{buf.Reader},
+		frameReaderFactory: hybiFrameReaderFactory{Reader: buf.Reader},
 		frameWriterFactory: hybiFrameWriterFactory{
 			buf.Writer, request == nil},
 		PayloadType:        TextFrame,

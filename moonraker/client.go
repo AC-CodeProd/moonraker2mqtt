@@ -2,8 +2,8 @@ package moonraker
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
+	"moonraker2mqtt/internal/diagjson"
 	"time"
 
 	"moonraker2mqtt/config"
@@ -84,13 +84,13 @@ func (c *Client) GetHostInfo(ctx context.Context) (*websocket.PrinterInfo, error
 		return nil, err
 	}
 
-	data, err := json.Marshal(result)
+	data, err := diagjson.Marshal(6, result)
 	if err != nil {
 		return nil, err
 	}
 
 	var info websocket.PrinterInfo
-	err = json.Unmarshal(data, &info)
+	err = diagjson.Unmarshal(109, data, &info)
 	if err != nil {
 		return nil, err
 	}
@@ -104,13 +104,13 @@ func (c *Client) GetServerInfo(ctx context.Context) (*websocket.ServerInfo, erro
 		return nil, err
 	}
 
-	data, err := json.Marshal(result)
+	data, err := diagjson.Marshal(7, result)
 	if err != nil {
 		return nil, err
 	}
 
 	var info websocket.ServerInfo
-	err = json.Unmarshal(data, &info)
+	err = diagjson.Unmarshal(110, data, &info)
 	if err != nil {
 		return nil, err
 	}
@@ -119,12 +119,7 @@ func (c *Client) GetServerInfo(ctx context.Context) (*websocket.ServerInfo, erro
 }
 
 func (c *Client) GetKlippyState(ctx context.Context) (string, error) {
-	info, err := c.GetServerInfo(ctx)
-	if err != nil {
-		return "", err
-	}
-
-	return info.KlippyState, nil
+	return c.getKlippyState(ctx)
 }
 
 func (c *Client) GetSupportedObjects(ctx context.Context) ([]string, error) {
@@ -153,6 +148,8 @@ func (c *Client) GetSupportedObjects(ctx context.Context) ([]string, error) {
 	return objectNames, nil
 }
 
+// QueryObjects reads objects and its nested slices without mutation; ownership
+// stays with the caller, which may reuse the selection across MCU polls.
 func (c *Client) QueryObjects(ctx context.Context, objects map[string]any) (map[string]any, error) {
 	params := map[string]any{
 		"objects": objects,
@@ -205,7 +202,7 @@ func (c *Client) HandleCommand(topic string, payload []byte) {
 	c.logger.Info("Received command on topic: %s", topic)
 
 	var cmdMsg CommandMessage
-	if err := json.Unmarshal(payload, &cmdMsg); err != nil {
+	if err := diagjson.Unmarshal(111, payload, &cmdMsg); err != nil {
 		c.logger.Error("Failed to parse command message: %v", err)
 		return
 	}

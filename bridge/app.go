@@ -2,9 +2,9 @@ package bridge
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"moonraker2mqtt/config"
+	"moonraker2mqtt/internal/diagjson"
 	"moonraker2mqtt/logger"
 	"moonraker2mqtt/moonraker"
 	"moonraker2mqtt/mqtt"
@@ -30,6 +30,8 @@ type App struct {
 	moonrakerClient moonrakerAdapter
 	mqttClient      mqtt.MQTTClient
 	logger          logger.Logger
+	diagnosticStage uint8 // Read only after Run returns; runner-owned.
+	statusCache     statusPublicationCache
 }
 
 // New assembles the shared bridge with platform-provided configuration and adapters.
@@ -62,13 +64,15 @@ func (a *App) OnNotification(method string, params any) {
 	if a.mqttClient.IsConnected() {
 		topic := fmt.Sprintf("%s/notifications/%s", a.config.MQTT.TopicPrefix, method)
 
-		data, err := json.Marshal(params)
+		var notification diagjson.Notification
+		defer notification.Release() // established before user encoding can panic
+		err := notification.Encode(params, notificationBorrowQualified(a.mqttClient))
 		if err != nil {
 			a.logger.Error("Failed to marshal notification params: %v", err)
 			return
 		}
 
-		if err := a.mqttClient.Publish(topic, data, a.config.MQTT.QoS, a.config.MQTT.Retain, 3); err != nil {
+		if err := a.mqttClient.Publish(topic, notification.Bytes(), a.config.MQTT.QoS, a.config.MQTT.Retain, 3); err != nil {
 			a.logger.Error("Failed to publish notification to MQTT after retries: %v", err)
 		}
 	} else {
@@ -80,11 +84,24 @@ func (a *App) OnException(err error) {
 	a.logger.Error("Moonraker exception: %v", err)
 }
 
+// SessionDiagnostics is opt-in through -X; only primitive numeric output.
+var SessionDiagnostics = "false"
+
+// DiagnosticStage is runner-owned: 1 MQTT startup, 2 MR startup, 3 initial
+// publication, 4 monitoring, 5 MQTT down, 6 MR down. Do not read concurrently.
+func (a *App) DiagnosticStage() uint8 { return a.diagnosticStage }
+
 func (a *App) Run(ctx context.Context) error {
+	a.diagnosticStage = 1
 	a.logger.Info("Starting Moonraker2MQTT")
 	a.logger.Info("Version: %s, Git Commit: %s, Build Date: %s", version.Version, version.GitCommit, version.BuildDate)
 
-	if err := a.mqttClient.Connect(); err != nil {
+	if err := a.connectMQTT(ctx); err != nil {
+		// MCU startup retries share this caller context; failed attempts still
+		// own the durable workers and must be joined before returning.
+		if endSessionOnDisconnect {
+			_ = a.mqttClient.Disconnect()
+		}
 		return fmt.Errorf("failed to connect to MQTT broker: %w", err)
 	}
 	defer func() {
@@ -93,10 +110,17 @@ func (a *App) Run(ctx context.Context) error {
 		}
 	}()
 
-	if err := a.moonrakerClient.Connect(ctx); err != nil {
+	a.diagnosticStage = 2
+	if endSessionOnDisconnect {
+		defer a.moonrakerClient.Disconnect()
+	}
+	if err := a.connectMoonraker(ctx); err != nil {
 		return fmt.Errorf("failed to connect to Moonraker: %w", err)
 	}
 	defer func() {
+		if endSessionOnDisconnect {
+			return
+		}
 		if err := a.moonrakerClient.Disconnect(); err != nil {
 			a.logger.Error("Failed to disconnect from Moonraker: %v", err)
 		}
@@ -113,6 +137,7 @@ func (a *App) Run(ctx context.Context) error {
 		}
 	}
 
+	a.diagnosticStage = 3
 	maxRetries := 3
 	for retries := 0; retries < maxRetries; retries++ {
 		if err := a.publishInitialInfo(ctx); err != nil {
@@ -132,10 +157,11 @@ func (a *App) Run(ctx context.Context) error {
 		}
 	}
 
+	a.diagnosticStage = 4
 	if endSessionOnDisconnect {
 		// Return through both deferred Disconnect calls before supervision
 		// can reset; do not leave Run blocked on a still-healthy Wi-Fi ctx.
-		err := a.periodicMonitoring(ctx)
+		err := a.monitorReusable(ctx)
 		a.logger.Info("Shutting down...")
 		return err
 	}
@@ -153,7 +179,7 @@ func (a *App) publishInitialInfo(ctx context.Context) error {
 		return fmt.Errorf("failed to get server info: %w", err)
 	}
 
-	data, err := json.Marshal(serverInfo)
+	data, err := diagjson.Marshal(8, serverInfo)
 	if err != nil {
 		return fmt.Errorf("failed to marshal server info: %w", err)
 	}
@@ -168,7 +194,7 @@ func (a *App) publishInitialInfo(ctx context.Context) error {
 		return fmt.Errorf("failed to get printer info: %w", err)
 	}
 
-	data, err = json.Marshal(printerInfo)
+	data, err = diagjson.Marshal(9, printerInfo)
 	if err != nil {
 		return fmt.Errorf("failed to marshal printer info: %w", err)
 	}
@@ -202,9 +228,11 @@ func (a *App) periodicMonitoring(ctx context.Context) error {
 			// this session before either Connect can touch a fragmented heap.
 			if endSessionOnDisconnect {
 				if !mqttConnected {
+					a.diagnosticStage = 5
 					return fmt.Errorf("MQTT disconnected; session recovery required")
 				}
 				if !moonrakerConnected {
+					a.diagnosticStage = 6
 					return fmt.Errorf("Moonraker disconnected; session recovery required")
 				}
 			}
@@ -278,21 +306,12 @@ func (a *App) publishStatus(ctx context.Context) error {
 		return fmt.Errorf("failed to get klipper state: %w", err)
 	}
 
-	topic := fmt.Sprintf("%s/klipper/state", a.config.MQTT.TopicPrefix)
+	topic := a.klippyStatusTopic()
 	if err := a.mqttClient.Publish(topic, []byte(klippyState), a.config.MQTT.QoS, false, 3); err != nil {
 		return fmt.Errorf("failed to publish klipper state: %w", err)
 	}
 
-	objects, err := a.config.Moonraker.GetMonitoredObjects()
-	if err != nil {
-		a.logger.Warn("Failed to get monitored objects from config, using defaults: %v", err)
-		objects = map[string]any{
-			"print_stats": nil,
-			"toolhead":    []string{"position"},
-			"extruder":    []string{"temperature", "target"},
-			"heater_bed":  []string{"temperature", "target"},
-		}
-	}
+	objects := a.statusObjects()
 
 	result, err := a.moonrakerClient.QueryObjects(ctx, objects)
 	if err != nil {
@@ -306,16 +325,7 @@ func (a *App) publishStatus(ctx context.Context) error {
 			continue
 		}
 
-		data, err := json.Marshal(objectData)
-		if err != nil {
-			a.logger.Error("Failed to marshal object %s: %v", objectName, err)
-			errorCount++
-			continue
-		}
-
-		topic := fmt.Sprintf("%s/objects/%s", a.config.MQTT.TopicPrefix, objectName)
-		if err := a.mqttClient.Publish(topic, data, a.config.MQTT.QoS, false, 3); err != nil {
-			a.logger.Error("Failed to publish object %s after retries: %v", objectName, err)
+		if !a.publishStatusObject(objectName, objectData) {
 			errorCount++
 		}
 	}

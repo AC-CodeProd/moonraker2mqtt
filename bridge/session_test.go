@@ -126,18 +126,15 @@ func TestSessionDisconnectPolicyAndCleanup(t *testing.T) {
 					t.Fatalf("cancel returned %v", err)
 				}
 			} else if testMCUSessionPolicy {
-				if p.mqttConnects != 1 || p.moonConnects != 1 {
-					t.Fatalf("MCU reconnected: MQTT=%d Moonraker=%d", p.mqttConnects, p.moonConnects)
+				wantMQTT, wantMR := 1, 1
+				if drop == "mqtt" || drop == "both" {
+					wantMQTT = 2
 				}
-				if err == nil || ctx.Err() != nil || err == network.ErrShutdown {
-					t.Fatalf("MCU must return protocol session error without waiting for ctx cancellation: %v", err)
+				if drop == "moonraker" || drop == "both" {
+					wantMR = 2
 				}
-				protocol := "Moonraker"
-				if drop != "moonraker" {
-					protocol = "MQTT"
-				}
-				if !strings.Contains(err.Error(), protocol+" disconnected") {
-					t.Fatalf("wrong session error: %v", err)
+				if p.mqttConnects != wantMQTT || p.moonConnects != wantMR || !errors.Is(err, context.Canceled) {
+					t.Fatalf("same-boot recovery must keep Session until original cancellation: MQTT=%d MR=%d err=%v", p.mqttConnects, p.moonConnects, err)
 				}
 			} else {
 				if !errors.Is(err, context.Canceled) {

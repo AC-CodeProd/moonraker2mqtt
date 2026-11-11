@@ -1,7 +1,7 @@
 package config
 
 import (
-	"encoding/json"
+"moonraker2mqtt/internal/diagjson"
 	"fmt"
 	"strings"
 	"time"
@@ -45,7 +45,7 @@ func (m *MoonrakerConfig) GetMonitoredObjects() (map[string]any, error) {
 	}
 
 	var objects map[string]any
-	if err := json.Unmarshal([]byte(trimmed), &objects); err != nil {
+	if err := diagjson.Unmarshal(112, []byte(trimmed), &objects); err != nil {
 		return nil, fmt.Errorf("failed to parse monitored objects JSON: %w", err)
 	}
 

@@ -13,11 +13,12 @@
 package websocket
 
 import (
+	"context"
 	"bufio"
 	"crypto/tls"
-	"encoding/json"
 	"errors"
 	"io"
+	"moonraker2mqtt/internal/diagjson"
 	"net"
 	"net/http"
 	"net/url"
@@ -99,6 +100,9 @@ type Config struct {
 
 	// Dialer used when opening websocket connections.
 	Dialer *net.Dialer
+	// OwnedDialContext is an explicit MCU-only capability supplied by lifecycle.
+	// It has no fallback and is used only by the serialized bounded ws dial.
+	OwnedDialContext func(context.Context,string,string)(net.Conn,error)
 
 	handshakeData map[string]string
 }
@@ -305,6 +309,7 @@ func (ws *Conn) Request() *http.Request { return ws.request }
 type Codec struct {
 	Marshal   func(v interface{}) (data []byte, payloadType byte, err error)
 	Unmarshal func(data []byte, payloadType byte, v interface{}) (err error)
+	UnmarshalProof func(data []byte, payloadType byte, v interface{}, proof FrameProof) error
 }
 
 // Send sends v marshaled by cd.Marshal as single frame to ws.
@@ -324,13 +329,25 @@ func (cd Codec) Send(ws *Conn, v interface{}) (err error) {
 	return err
 }
 
-// Receive receives single frame from ws, unmarshaled by cd.Unmarshal and stores
-// in v. The whole frame payload is read to an in-memory buffer; max size of
-// payload is defined by ws.MaxPayloadBytes. If frame payload size exceeds
-// limit, ErrFrameTooLarge is returned; in this case frame is not read off wire
-// completely. The next call to Receive would read and discard leftover data of
-// previous oversized frame before processing next frame.
-func (cd Codec) Receive(ws *Conn, v interface{}) (err error) {
+// ErrReceiveBufferTooSmall indicates a caller reservation smaller than an accepted frame.
+var ErrReceiveBufferTooSmall = errors.New("websocket: receive reservation too small")
+
+// ReceiveBorrowed invokes Unmarshal with temporary storage. The caller must
+// serialize buffer use and ensure Unmarshal does not retain any alias into it.
+// Generic codecs must continue using Receive, which transfers owned storage.
+func (cd Codec) ReceiveBorrowed(ws *Conn, v interface{}, buffer []byte) error {
+	// Preserve even a nil reservation as the borrowed mode (zero-length frames).
+	return cd.receive(ws, v, buffer, true)
+}
+
+// Receive decodes one frame into v using independently owned payload storage.
+// Frames beyond MaxPayloadBytes return ErrFrameTooLarge; the following call
+// drains the rejected frame before decoding another. Codec slices may escape.
+func (cd Codec) Receive(ws *Conn, v interface{}) error {
+	return cd.receive(ws, v, nil, false)
+}
+
+func (cd Codec) receive(ws *Conn, v interface{}, buffer []byte, borrowed bool) (err error) {
 	ws.rio.Lock()
 	defer ws.rio.Unlock()
 	if ws.frameReader != nil {
@@ -345,6 +362,7 @@ again:
 	if err != nil {
 		return err
 	}
+	rawOpcode, parsedHeaderBytes := diagnosticHeader(frame)
 	frame, err = ws.frameHandler.HandleFrame(frame)
 	if err != nil {
 		return err
@@ -357,6 +375,7 @@ again:
 		maxPayloadBytes = DefaultMaxPayloadBytes
 	}
 	if hf, ok := frame.(*hybiFrameReader); ok && hf.header.Length > int64(maxPayloadBytes) {
+		observeFrameReject(hf, maxPayloadBytes, borrowed, rawOpcode, parsedHeaderBytes)
 		// payload size exceeds limit, no need to call Unmarshal
 		//
 		// set frameReader to current oversized frame so that
@@ -371,13 +390,29 @@ again:
 		// The length was checked against the payload limit above. Allocate
 		// exactly once instead of growing ReadAll's buffer on the MCU heap.
 		// Do not reuse it: Unmarshal may retain an alias (e.g. Message).
-		data = make([]byte, int(hf.header.Length))
+		if borrowed {
+			if hf.header.Length > int64(len(buffer)) {
+				ws.frameReader = frame
+				return ErrReceiveBufferTooSmall
+			}
+			size := int(hf.header.Length)
+			data = buffer[:size:size]
+		} else {
+			data = make([]byte, int(hf.header.Length))
+		}
 		_, err = io.ReadFull(frame, data)
 	} else {
+		if borrowed {
+			ws.frameReader = frame
+			return ErrNotSupported // unknown length cannot use a bounded reservation
+		}
 		data, err = io.ReadAll(frame)
 	}
 	if err != nil {
 		return err
+	}
+	if cd.UnmarshalProof != nil {
+		return cd.UnmarshalProof(data, payloadType, v, frameProof(frame, data, payloadType))
 	}
 	return cd.Unmarshal(data, payloadType, v)
 }
@@ -429,15 +464,15 @@ Trivial usage:
 	data = []byte{0, 1, 2}
 	websocket.Message.Send(ws, data)
 */
-var Message = Codec{marshal, unmarshal}
+var Message = Codec{Marshal: marshal, Unmarshal: unmarshal}
 
 func jsonMarshal(v interface{}) (msg []byte, payloadType byte, err error) {
-	msg, err = json.Marshal(v)
+	msg, err = diagjson.Marshal(4, v)
 	return msg, TextFrame, err
 }
 
 func jsonUnmarshal(msg []byte, payloadType byte, v interface{}) (err error) {
-	return json.Unmarshal(msg, v)
+	return diagjson.Unmarshal(108, msg, v)
 }
 
 /*
@@ -459,4 +494,4 @@ Trivial usage:
 	// send JSON type T
 	websocket.JSON.Send(ws, data)
 */
-var JSON = Codec{jsonMarshal, jsonUnmarshal}
+var JSON = Codec{Marshal: jsonMarshal, Unmarshal: jsonUnmarshal}

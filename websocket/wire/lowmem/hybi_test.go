@@ -305,7 +305,7 @@ func testHybiFrame(t *testing.T, testHeader, testPayload, testMaskedPayload []by
 	if !bytes.Equal(expectedFrame, b.Bytes()) {
 		t.Errorf("frame expected %q got %q", expectedFrame, b.Bytes())
 	}
-	frameReaderFactory := &hybiFrameReaderFactory{bufio.NewReader(b)}
+	frameReaderFactory := &hybiFrameReaderFactory{Reader: bufio.NewReader(b)}
 	r, err := frameReaderFactory.NewFrameReader()
 	if err != nil {
 		t.Errorf("Read error %q", err)

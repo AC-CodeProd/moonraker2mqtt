@@ -9,3 +9,6 @@ type Conn = ws.Conn
 var NewConfig = ws.NewConfig
 var DialConfig = ws.DialConfig
 var JSON = ws.JSON
+
+// Per-client storage; host/generic constructors remain unchanged.
+type DialBuffers = ws.DialBuffers

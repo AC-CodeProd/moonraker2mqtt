@@ -5,7 +5,6 @@
 package websocket
 
 import (
-	"bufio"
 	"context"
 	"io"
 	"net"
@@ -42,14 +41,30 @@ func NewConfig(server, origin string) (config *Config, err error) {
 
 // NewClient creates a new WebSocket client connection over rwc.
 func NewClient(config *Config, rwc io.ReadWriteCloser) (ws *Conn, err error) {
-	br := bufio.NewReader(rwc)
-	bw := bufio.NewWriter(rwc)
+ return newClientWithBuffers(config, rwc, nil)
+}
+
+func newClientWithBuffers(config *Config, rwc io.ReadWriteCloser, buffers *DialBuffers) (ws *Conn, err error) {
+	var reader io.Reader = rwc
+	var proof *proofStream
+	if FrameProofDiagnostics == "true" {
+		proof = newProofStream(true)
+		reader = &proofNetworkReader{r: rwc, p: proof}
+	}
+	if buffers == nil { buffers = &DialBuffers{} }
+ buffers.Init()
+ br, bw := buffers.pair.Reader, buffers.pair.Writer
+ br.Reset(reader)
+ bw.Reset(rwc)
 	err = hybiClientHandshake(config, br, bw)
 	if err != nil {
 		return
 	}
-	buf := bufio.NewReadWriter(br, bw)
+	buf := buffers.pair
 	ws = newHybiClientConn(config, buf, rwc)
+	if proof != nil {
+		ws.frameReaderFactory = hybiFrameReaderFactory{Reader: br, proof: proof}
+	}
 	return
 }
 
