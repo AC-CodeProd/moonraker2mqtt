@@ -191,7 +191,9 @@ func TestPendingOperationValidation(t *testing.T) {
 		func(b []byte) { b[8] ^= 1 }, func(b []byte) { b[16] ^= 1 }, func(b []byte) { binary.LittleEndian.PutUint32(b[4:], MaxSettings+1) },
 	} {
 		b := make([]byte, PendingSize)
-		StageOperation(b, payload(), RepairOperation)
+		if err := StageOperation(b, payload(), RepairOperation); err != nil {
+			t.Fatalf("stage repair before corruption: %v", err)
+		}
 		change(b)
 		if p, e := TakeOperation(b, true); e == nil || p != nil {
 			t.Fatal("invalid pending accepted")
@@ -204,7 +206,9 @@ func TestPendingOperationValidation(t *testing.T) {
 	if StageOperation(b, payload(), Operation(99)) == nil {
 		t.Fatal("unknown staged")
 	}
-	StageOperation(b, payload(), RepairOperation)
+	if err := StageOperation(b, payload(), RepairOperation); err != nil {
+		t.Fatalf("stage repair before save-only take: %v", err)
+	}
 	if p, e := Take(b, true); e == nil || p != nil {
 		t.Fatal("repair downgraded to save")
 	}

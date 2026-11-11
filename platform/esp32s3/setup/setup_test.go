@@ -3,6 +3,7 @@ package setup
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"moonraker2mqtt/platform/esp32s3/store"
@@ -51,7 +52,9 @@ func TestPending(t *testing.T) {
 	}
 	for _, i := range []int{0, 4, 8, 16, 40} {
 		b := make([]byte, PendingSize)
-		Stage(b, payload())
+		if err := Stage(b, payload()); err != nil {
+			t.Fatalf("stage settings before corruption: %v", err)
+		}
 		b[i] ^= 128
 		p, _ := Take(b, true)
 		if p != nil {
@@ -62,16 +65,53 @@ func TestPending(t *testing.T) {
 func exchange(t *testing.T, p Portal, raw string) (string, bool) {
 	t.Helper()
 	server, client := net.Pipe()
+	t.Cleanup(func() {
+		if err := client.Close(); err != nil {
+			t.Errorf("close client: %v", err)
+		}
+		if err := server.Close(); err != nil {
+			t.Errorf("close server: %v", err)
+		}
+	})
+	if err := client.SetDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatalf("set client deadline: %v", err)
+	}
 	done := make(chan bool, 1)
 	go func() { done <- p.Handle(server) }()
-	client.SetDeadline(time.Now().Add(time.Second))
-	go func() { io.WriteString(client, raw) }()
-	b, e := io.ReadAll(client)
-	client.Close()
-	if e != nil {
-		t.Fatal(e)
+	type writeResult struct {
+		n   int
+		err error
 	}
-	return string(b), <-done
+	writeDone := make(chan writeResult, 1)
+	go func() {
+		n, err := io.WriteString(client, raw)
+		writeDone <- writeResult{n, err}
+	}()
+	b, readErr := io.ReadAll(client)
+	closeErr := client.Close()
+	written := <-writeDone
+	accepted := <-done
+	if readErr != nil {
+		t.Fatalf("read response: %v", readErr)
+	}
+	if closeErr != nil {
+		t.Fatalf("close client after response: %v", closeErr)
+	}
+	response := string(b)
+	if written.err != nil {
+		// These rejections may close before consuming the entire request.
+		// Join the writer and accept only that expected pipe-closure error.
+		earlyRejection := strings.HasPrefix(response, "HTTP/1.1 400 ") ||
+			strings.HasPrefix(response, "HTTP/1.1 403 ") ||
+			strings.HasPrefix(response, "HTTP/1.1 404 ") ||
+			strings.HasPrefix(response, "HTTP/1.1 413 ")
+		if accepted || !earlyRejection || !errors.Is(written.err, io.ErrClosedPipe) {
+			t.Fatalf("write request: %v", written.err)
+		}
+	} else if written.n != len(raw) {
+		t.Fatalf("write request: expected %d bytes, got %d", len(raw), written.n)
+	}
+	return response, accepted
 }
 func post(body string) string {
 	return fmt.Sprintf("POST /settings HTTP/1.1\r\nHost: 192.168.4.1\r\nOrigin: http://192.168.4.1\r\nContent-Type: application/json\r\nX-Setup-Token: token\r\nContent-Length: %d\r\n\r\n%s", len(body), body)
