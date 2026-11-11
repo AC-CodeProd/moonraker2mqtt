@@ -391,7 +391,7 @@ GOOS=darwin GOARCH=arm64 go build -o moonraker2mqtt-darwin-arm64 ./cmd/moonraker
 
 - Waveshare ESP32-S3-Zero (ESP32-S3FH4R2), a USB-C data cable and a trusted 2.4 GHz Wi-Fi network.
 - Moonraker and a private MQTT broker reachable from the board; use their network addresses, not `localhost`.
-- Go 1.24.4+ and Make; Docker for `make firmware`, or local TinyGo 0.42.0 for `make firmware-local`.
+- Go 1.24.4+ and Make; Docker with the pinned Linux/arm64 TinyGo 0.44.0 image and an existing module cache (offline build).
 - The firmware is built separately and is not included in the hosted GitHub release assets.
 
 ### Build and configuration
@@ -408,19 +408,20 @@ make test-firmware-adapter
 make firmware FIRMWARE_LDFLAGS="-X moonraker2mqtt/platform/esp32s3.SetupPassword=replace-with-unique-password"
 ```
 
-TinyGo is pinned to `tinygo/tinygo:0.42.0`. The custom
-`targets/esp32s3-settings.json` inherits `esp32s3-supermini` for the USB console,
-with an explicit internal-RAM-only linker layout for this S3 rev0.2/XMC 4MiB
-board. `firmware-local` generates paths for a local TinyGo installation.
-Both build rules honor `TINYGO_TARGET`: for example,
-`make firmware-local TINYGO_TARGET=/absolute/path/custom-settings.json`.
-Only the default settings target is translated to `build/local-target.json`;
-an explicit custom target is passed through unchanged. Custom targets must keep
-the S3 internal-RAM linker/IRAM vectors, RTC NOLOAD reservation and both settings
-sectors intact; generic targets without those reservations are **not supported**.
-Docker target paths must exist inside the container (normally under `/src`).
-The image check/4MiB header remains enabled for both rules.
-No PSRAM, second CPU, LED or generic S3 flash support is assumed.
+TinyGo is pinned to **0.44.0 / Go 1.27.3**, including the required local JSON
+and owned-network overlays, not just a compiler version tag. See
+[reproducible firmware build](docs/ESP32S3_BUILD.md) for the exact image digest,
+module-cache prerequisite, output paths and local compiler checks.
+`make firmware` runs without network or device access, using a fresh private
+`FIRMWARE_OUTPUT` directory (default `build/tinygo-0.44.0`). A repeat build must
+choose another directory. `firmware-local` requires the same pre-patched compiler
+and fails closed when an overlay is absent. `TINYGO_TARGET` overrides remain
+available for advanced builds; custom targets must preserve the settings/RTC
+reservations and IRAM vectors. Only the default target is covered by validation.
+The default `targets/esp32s3-settings.json` inherits `esp32s3-supermini`; the
+0.44 linker retains an internal-RAM-only heap and reserved settings sectors.
+The image formatter updates the 4MiB header and RAM digest without changing
+appended XIP bytes. No PSRAM, second CPU or LED support is assumed.
 
 Without saved settings or valid link-time fallback settings, join
 `Moonraker-Setup` using the build's unique WPA2 password, then explicitly open
@@ -452,6 +453,19 @@ diagnose the storage instead. HTTP 202 is still not a durability claim, and an
 interrupted repair may lose both old records; no automatic repair/retry occurs.
 
 ### Validation status and limits
+
+Current sources include bounded MQTT subscriptions and streaming payloads,
+borrowed WebSocket receive/JSON publication, typed Klippy-state decoding with
+collision fallback, reusable protocol workers and owned native dial storage.
+Saved-settings Wi-Fi startup failure requests a controlled reboot after a
+30-second post-error backoff instead of entering setup. The native association
+call itself is **not** made cancellable or time-bounded. Ordinary MQTT/Moonraker
+recovery remains distinct from Wi-Fi reboot recovery. No experimental same-boot
+Wi-Fi reassociation driver is included, and this integration is not a general
+OOM cure or a new hardware qualification.
+
+**Historical 0.42 figures and original setup limitations below are not the
+current 0.44 build measurements.** See the build document for the current inputs.
 
 Unconfigured portal + full bridge: **1,297,447 bytes flash, 158,620 bytes static
 RAM**. Configured build with commands enabled: **1,297,899 bytes flash,

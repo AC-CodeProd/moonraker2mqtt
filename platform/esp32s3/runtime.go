@@ -59,6 +59,15 @@ func Run() {
 		if err := radio.NetConnect(&nl.ConnectParams{Ssid: ssid, Passphrase: password}); err != nil {
 			// Lifecycle returns only fixed stage names, never the driver's error text.
 			log.Warn("Wi-Fi unavailable: %v", err)
+			if savedErr == nil {
+				// Durable settings already passed validation and the safety guard.
+				// An unavailable AP is not a request to enter setup. Never restart
+				// the native radio/stack in this boot after a failed startup.
+				log.Warn("Wi-Fi startup unavailable; recovery reset after bounded backoff")
+				time.Sleep(network.Backoff(4))
+				cancelPending() // Recovery must not commit an unrelated RTC save.
+				rebootSave()
+			}
 			if err == network.ErrEnable || err == network.ErrShutdown {
 				log.Error("Radio recovery unsafe; reset required, settings preserved")
 				safeIdle()
@@ -82,8 +91,16 @@ func Run() {
 			return radio.connected()
 		}, func(ctx context.Context) error {
 			defer client.Disconnect() // Covers partial MQTT Connect failure as well.
-			return app.Run(ctx)
+			result := app.Run(ctx)
+			if bridge.SessionDiagnostics == "true" {
+				// App's cleanup is finished; external safeguard runs on callback return.
+				println("SESSIONDIAG: runner stage=", app.DiagnosticStage(), "reason=", network.DiagnosticReason(result))
+			}
+			return result
 		}, 250*time.Millisecond, 10*time.Second)
+		if bridge.SessionDiagnostics == "true" {
+			println("SESSIONDIAG: supervisor stage=", uint8(5), "reason=", network.DiagnosticReason(err))
+		}
 		if err == network.ErrShutdown {
 			log.Error("Bridge shutdown timed out; reset required before network reuse")
 			cancelPending() // An unrelated recovery reset must not commit RTC data.

@@ -389,7 +389,7 @@ GOOS=darwin GOARCH=arm64 go build -o moonraker2mqtt-darwin-arm64 ./cmd/moonraker
 
 - Waveshare ESP32-S3-Zero (ESP32-S3FH4R2), câble USB-C de données et réseau Wi-Fi 2,4 GHz de confiance.
 - Moonraker et un broker MQTT privé accessibles depuis la carte ; utiliser leurs adresses réseau, pas `localhost`.
-- Go 1.24.4+ et Make ; Docker pour `make firmware`, ou TinyGo 0.42.0 installé localement pour `make firmware-local`.
+- Go 1.24.4+ et Make ; Docker avec l’image Linux/arm64 TinyGo 0.44.0 figée et un cache de modules déjà disponible (compilation hors ligne).
 - Le firmware se compile séparément et n’est pas inclus dans les releases GitHub de l’application hôte.
 
 ### Compilation et configuration
@@ -407,20 +407,20 @@ make test-firmware-adapter
 make firmware FIRMWARE_LDFLAGS="-X moonraker2mqtt/platform/esp32s3.SetupPassword=remplacer-par-un-secret-unique"
 ```
 
-TinyGo reste fixé à `tinygo/tinygo:0.42.0`. La cible personnalisée
-`targets/esp32s3-settings.json` hérite de `esp32s3-supermini` pour la console USB
-et réserve explicitement la mémoire interne de cette carte S3 rev0.2/XMC 4Mio.
-`firmware-local` génère les chemins adaptés à une installation locale TinyGo.
-Les deux règles respectent `TINYGO_TARGET`, par exemple
-`make firmware-local TINYGO_TARGET=/chemin/absolu/custom-settings.json`.
-Seule la cible de paramètres par défaut est adaptée en `build/local-target.json` ;
-une cible personnalisée explicite est transmise sans modification. Elle doit
-conserver le linker S3 en RAM interne, les vecteurs IRAM, la réservation RTC
-NOLOAD et les deux secteurs de paramètres. Les cibles génériques sans ces
-réservations ne sont **pas prises en charge**. Dans Docker, le chemin doit être
-accessible dans le conteneur (normalement sous `/src`). Le contrôle d’image et
-l’en-tête 4Mio restent actifs dans les deux règles.
-Ni PSRAM utilisable, second cœur, LED ni driver flash S3 générique ne sont supposés.
+TinyGo est fixé à **0.44.0 / Go 1.27.3**, avec les surcouches JSON et réseau
+à propriété explicite nécessaires, pas seulement un nouveau tag de compilateur.
+Voir [la compilation reproductible](docs/ESP32S3_BUILD.md) pour le digest exact,
+le cache de modules requis, les sorties et les contrôles du compilateur local.
+`make firmware` fonctionne sans réseau ni accès matériel, dans un répertoire
+privé neuf `FIRMWARE_OUTPUT` (`build/tinygo-0.44.0` par défaut). Choisir un autre
+répertoire pour répéter une compilation. `firmware-local` exige le même compilateur
+déjà corrigé et refuse de compiler si une surcouche manque. Les personnalisations
+`TINYGO_TARGET` restent disponibles ; elles doivent conserver les secteurs de
+paramètres, la RTC NOLOAD et les vecteurs IRAM. Seule la cible par défaut est validée.
+`targets/esp32s3-settings.json` hérite de `esp32s3-supermini` ; le linker 0.44
+conserve un tas en RAM interne et les secteurs réservés. Le formateur corrige
+l’en-tête 4Mio et le digest RAM sans modifier les octets XIP ajoutés après celui-ci.
+Ni PSRAM utilisable, second cœur ni LED ne sont supposés.
 
 Sans paramètres enregistrés ni configuration `-X` valide, rejoindre
 `Moonraker-Setup` avec le mot de passe WPA2 unique de compilation, puis ouvrir
@@ -456,6 +456,21 @@ peut perdre les deux anciens enregistrements. Aucun effacement ni nouvel essai
 automatique.
 
 ### État de validation et limites
+
+Les sources actuelles comprennent les abonnements MQTT bornés et les payloads
+en flux, la réception WebSocket et la publication JSON empruntées, le décodage
+typé de l’état Klippy avec repli en cas de collision, les workers protocolaires
+réutilisables et la réservation réseau native à propriété explicite.
+Si le Wi-Fi échoue au démarrage avec des paramètres valides enregistrés, un
+redémarrage contrôlé est demandé après un délai post-erreur de 30 secondes,
+au lieu d’ouvrir le portail. L’appel natif d’association lui-même n’est **ni
+annulable ni borné en durée**. La reprise ordinaire MQTT/Moonraker reste distincte
+de cette reprise Wi-Fi par reboot. Aucun pilote expérimental de réassociation
+Wi-Fi dans le même démarrage n’est inclus. Cette intégration n’est ni une
+correction générale des OOM, ni une nouvelle qualification matérielle.
+
+**Les chiffres 0.42 et limites initiales ci-dessous sont historiques, pas les
+mesures de la compilation 0.44 actuelle.** Voir le document de compilation.
 
 Portail non configuré + pont complet : **1 297 447 octets de flash et 158 620
 octets de RAM statique**. Configuration avec commandes actives : **1 297 899
