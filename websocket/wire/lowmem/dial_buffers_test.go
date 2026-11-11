@@ -168,17 +168,17 @@ func TestDialBuffersReleaseDiscardsErrorPendingWithoutFlush(t *testing.T) {
 	ids := backingIDs(b)
 	bad := &reuseHTTP{mode: "shortwrite"}
 	b.pair.Writer.Reset(bad)
-	_, _ = b.pair.Writer.WriteString("old bytes")
-	if b.pair.Writer.Flush() != io.ErrShortWrite {
+	_, _ = b.pair.WriteString("old bytes")
+	if b.pair.Flush() != io.ErrShortWrite {
 		t.Fatal("shortwrite not reached")
 	}
 	b.Release()
 	good := &bytes.Buffer{}
 	b.pair.Writer.Reset(good)
-	if _, e := b.pair.Writer.WriteString("new"); e != nil {
+	if _, e := b.pair.WriteString("new"); e != nil {
 		t.Fatal(e)
 	}
-	if e := b.pair.Writer.Flush(); e != nil {
+	if e := b.pair.Flush(); e != nil {
 		t.Fatal(e)
 	}
 	if good.String() != "new" || backingIDs(b) != ids {

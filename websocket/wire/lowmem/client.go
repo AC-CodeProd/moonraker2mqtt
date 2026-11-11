@@ -20,7 +20,7 @@ type DialError struct {
 }
 
 func (e *DialError) Error() string {
-	return "websocket.Dial " + e.Config.Location.String() + ": " + e.Err.Error()
+	return "websocket.Dial " + e.Location.String() + ": " + e.Err.Error()
 }
 
 // NewConfig creates a new WebSocket config for client connection.

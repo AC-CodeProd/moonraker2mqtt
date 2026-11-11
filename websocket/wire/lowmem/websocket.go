@@ -201,11 +201,11 @@ func (ws *Conn) Read(msg []byte) (n int, err error) {
 	defer ws.rio.Unlock()
 again:
 	if ws.frameReader == nil {
-		frame, err := ws.frameReaderFactory.NewFrameReader()
+		frame, err := ws.NewFrameReader()
 		if err != nil {
 			return 0, err
 		}
-		ws.frameReader, err = ws.frameHandler.HandleFrame(frame)
+		ws.frameReader, err = ws.HandleFrame(frame)
 		if err != nil {
 			return 0, err
 		}
@@ -215,7 +215,7 @@ again:
 	}
 	n, err = ws.frameReader.Read(msg)
 	if err == io.EOF {
-		if trailer := ws.frameReader.TrailerReader(); trailer != nil {
+		if trailer := ws.TrailerReader(); trailer != nil {
 			ws.drainFrame(trailer)
 		}
 		ws.frameReader = nil
@@ -229,7 +229,7 @@ again:
 func (ws *Conn) Write(msg []byte) (n int, err error) {
 	ws.wio.Lock()
 	defer ws.wio.Unlock()
-	w, err := ws.frameWriterFactory.NewFrameWriter(ws.PayloadType)
+	w, err := ws.NewFrameWriter(ws.PayloadType)
 	if err != nil {
 		return 0, err
 	}
@@ -240,7 +240,7 @@ func (ws *Conn) Write(msg []byte) (n int, err error) {
 
 // Close implements the io.Closer interface.
 func (ws *Conn) Close() error {
-	err := ws.frameHandler.WriteClose(ws.defaultCloseStatus)
+	err := ws.WriteClose(ws.defaultCloseStatus)
 	err1 := ws.rwc.Close()
 	if err != nil {
 		return err
@@ -320,7 +320,7 @@ func (cd Codec) Send(ws *Conn, v interface{}) (err error) {
 	}
 	ws.wio.Lock()
 	defer ws.wio.Unlock()
-	w, err := ws.frameWriterFactory.NewFrameWriter(payloadType)
+	w, err := ws.NewFrameWriter(payloadType)
 	if err != nil {
 		return err
 	}
@@ -358,12 +358,12 @@ func (cd Codec) receive(ws *Conn, v interface{}, buffer []byte, borrowed bool) (
 		ws.frameReader = nil
 	}
 again:
-	frame, err := ws.frameReaderFactory.NewFrameReader()
+	frame, err := ws.NewFrameReader()
 	if err != nil {
 		return err
 	}
 	rawOpcode, parsedHeaderBytes := diagnosticHeader(frame)
-	frame, err = ws.frameHandler.HandleFrame(frame)
+	frame, err = ws.HandleFrame(frame)
 	if err != nil {
 		return err
 	}

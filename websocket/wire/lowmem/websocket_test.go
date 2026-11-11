@@ -57,9 +57,9 @@ type testCtrlAndDataHandler struct {
 }
 
 func (h *testCtrlAndDataHandler) WritePing(b []byte) (int, error) {
-	h.hybiFrameHandler.conn.wio.Lock()
-	defer h.hybiFrameHandler.conn.wio.Unlock()
-	w, err := h.hybiFrameHandler.conn.frameWriterFactory.NewFrameWriter(PingFrame)
+	h.conn.wio.Lock()
+	defer h.conn.wio.Unlock()
+	w, err := h.conn.NewFrameWriter(PingFrame)
 	if err != nil {
 		return 0, err
 	}

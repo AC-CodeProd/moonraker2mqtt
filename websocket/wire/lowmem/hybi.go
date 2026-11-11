@@ -312,7 +312,7 @@ func (handler *hybiFrameHandler) HandleFrame(frame frameReader) (frameReader, er
 func (handler *hybiFrameHandler) WriteClose(status int) (err error) {
 	handler.conn.wio.Lock()
 	defer handler.conn.wio.Unlock()
-	w, err := handler.conn.frameWriterFactory.NewFrameWriter(CloseFrame)
+	w, err := handler.conn.NewFrameWriter(CloseFrame)
 	if err != nil {
 		return err
 	}
@@ -326,7 +326,7 @@ func (handler *hybiFrameHandler) WriteClose(status int) (err error) {
 func (handler *hybiFrameHandler) WritePong(msg []byte) (n int, err error) {
 	handler.conn.wio.Lock()
 	defer handler.conn.wio.Unlock()
-	w, err := handler.conn.frameWriterFactory.NewFrameWriter(PongFrame)
+	w, err := handler.conn.NewFrameWriter(PongFrame)
 	if err != nil {
 		return 0, err
 	}

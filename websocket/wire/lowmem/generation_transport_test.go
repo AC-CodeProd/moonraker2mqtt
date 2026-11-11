@@ -26,7 +26,7 @@ func (c *qualifiedGenerationConn) GenerationInterrupt() (func() error, error) {
 		if c.interrupts.Add(1) != 1 {
 			return net.ErrClosed
 		}
-		return c.Conn.Close()
+		return c.Close()
 	}, nil
 }
 func TestGenerationTransportOwnsCapabilityAndIdempotentConcurrentClose(t *testing.T) {
