@@ -36,3 +36,5 @@ docker-compose*.yml
 .cache/
 tmp/
 temp/
+build/
+builds/

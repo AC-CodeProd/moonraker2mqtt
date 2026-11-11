@@ -1,0 +1,1 @@
+{"inherits":["esp32s3-supermini"],"linkerscript":"/src/targets/esp32s3-settings.ld","extra-files":["../../../src/targets/settings-vectors.S"],"ldflags":["-Map=/src/build/setup.map","--wrap=espradio_netif_set_connected"]}

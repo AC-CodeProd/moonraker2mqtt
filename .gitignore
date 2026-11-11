@@ -32,3 +32,27 @@
 !Dockerfile
 !.dockerignore
 tmp
+# Local host/firmware build artifacts (may embed credentials)
+/build/
+/builds/
+# Firmware safety sources (keep build artifacts ignored).
+!/platform/esp32s3/settings_hw.c
+!/platform/esp32s3/radio_state.c
+!/targets/esp32s3-settings.ld
+!/targets/esp32s3-settings.json
+!/targets/settings-vectors.S
+!/websocket/wire/lowmem/LICENSE
+# Source-distributed network dependencies only; stock toolchain stays external.
+!/third_party/lneto/LICENSE
+!/third_party/natiu-mqtt/LICENSE
+!/third_party/natiu-mqtt/LOCAL_CHANGES.md
+# Prevent build/qualification tools and compiler overlays being reintroduced.
+/docs/
+/tools/
+/third_party/tinygo-0.44.0/
+# Never include generated logs, Python bytecode or embedded credential artifacts.
+__pycache__/
+*.pyc
+/logs/
+# Exclude upstream benchmark-report tooling from the source-only fork subset.
+/third_party/lneto/internal/benchci/

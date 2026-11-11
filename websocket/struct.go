@@ -31,6 +31,7 @@ type RPCError struct {
 }
 
 type WebSocketRequest struct {
+	requestDecodeKind
 	ID       int
 	Method   string
 	Params   any

@@ -10,13 +10,14 @@ import (
 	"sync"
 	"time"
 
-	"golang.org/x/net/websocket"
+	websocket "moonraker2mqtt/websocket/wire"
 
 	"moonraker2mqtt/config"
 	"moonraker2mqtt/logger"
 )
 
 type WebSocketClient struct {
+	lifecycle    platformLifecycle
 	config       *config.MoonrakerConfig
 	listener     StatusListener
 	conn         *websocket.Conn
@@ -35,21 +36,26 @@ type WebSocketClient struct {
 
 func NewWebSocketClient(config *config.MoonrakerConfig, listener StatusListener, logger logger.Logger) *WebSocketClient {
 
-	return &WebSocketClient{
+	c := &WebSocketClient{
 		config:       config,
 		listener:     listener,
 		state:        WEB_SOCKET_STATE_STOPPED,
 		requests:     make(map[int]*WebSocketRequest),
 		nextID:       1,
-		sendChan:     make(chan *WebSocketMessage, 100),
+		sendChan:     make(chan *WebSocketMessage, sendQueueSize),
 		closeChan:    make(chan struct{}),
 		dataHandlers: make([]DataHandler, 0),
 		retry:        NewRetry(config.AutoReconnect, config.MaxReconnectAttempts, logger),
 		logger:       logger,
 	}
+	c.initLifecycle()
+	return c
 }
 
 func (c *WebSocketClient) Connect(ctx context.Context) error {
+	if reusableWorkers {
+		return c.connectReusable(ctx)
+	}
 	err := c.connectOnce(ctx)
 	if err == nil {
 		c.retry.Reset()
@@ -118,9 +124,10 @@ func (c *WebSocketClient) connectOnce(ctx context.Context) error {
 		}
 
 		c.conn = res.conn
+		configureConnection(c.conn)
 		c.setState(WEB_SOCKET_STATE_CONNECTED)
 
-		c.sendChan = make(chan *WebSocketMessage, 100)
+		c.sendChan = make(chan *WebSocketMessage, sendQueueSize)
 		c.closeChan = make(chan struct{})
 
 		go c.readLoop()
@@ -162,6 +169,9 @@ func (c *WebSocketClient) reconnectLoop(ctx context.Context) {
 }
 
 func (c *WebSocketClient) Disconnect() error {
+	if reusableWorkers {
+		return c.disconnectReusable()
+	}
 	c.stateMux.Lock()
 	defer c.stateMux.Unlock()
 
@@ -216,6 +226,13 @@ func (c *WebSocketClient) UnregisterDataHandler(handler DataHandler) {
 }
 
 func (c *WebSocketClient) Request(ctx context.Context, method string, params any) (*WebSocketResponse, error) {
+	if reusableWorkers {
+		m, err := c.requestReusable(ctx, method, params, 30*time.Second, false)
+		if err != nil {
+			return nil, err
+		}
+		return &WebSocketResponse{Result: m.Result, Error: m.Error}, nil
+	}
 	if ctx.Err() != nil {
 		return nil, fmt.Errorf("request cancelled: %w", ctx.Err())
 	}
@@ -263,7 +280,7 @@ func (c *WebSocketClient) readLoop() {
 			return
 		default:
 			var message WebSocketMessage
-			err := websocket.JSON.Receive(c.conn, &message)
+			err := c.receiveMessage(c.conn, &message)
 			if err != nil {
 				if err == io.EOF {
 					c.logger.Info("Connection closed by server")
@@ -338,7 +355,11 @@ func (c *WebSocketClient) handleMessage(message *WebSocketMessage) {
 		c.handlersMux.RUnlock()
 
 		for _, handler := range handlers {
-			go handler.ProcessDataMessage(message)
+			if reusableWorkers {
+				handler.ProcessDataMessage(message)
+			} else {
+				go handler.ProcessDataMessage(message)
+			}
 		}
 
 		if c.listener != nil {
@@ -352,11 +373,22 @@ func (c *WebSocketClient) SendRequest(method string, params any) (*WebSocketMess
 }
 
 func (c *WebSocketClient) SendRequestWithTimeout(method string, params any, timeout time.Duration) (*WebSocketMessage, error) {
+	return c.sendRequestWithTimeout(method, params, timeout, false)
+}
+
+func (c *WebSocketClient) sendRequestWithTimeout(method string, params any, timeout time.Duration, typedState bool) (*WebSocketMessage, error) {
+	if reusableWorkers {
+		return c.requestReusable(context.Background(), method, params, timeout, typedState)
+	}
 	if c.GetState() != WEB_SOCKET_STATE_CONNECTED {
 		return nil, NewWebSocketNotConnectedError("not connected")
 	}
 
 	c.requestsMux.Lock()
+	if maxPendingRequests > 0 && len(c.requests) >= maxPendingRequests {
+		c.requestsMux.Unlock()
+		return nil, NewWebSocketError("pending request limit reached", nil)
+	}
 	id := c.nextID
 	c.nextID++
 
@@ -366,6 +398,7 @@ func (c *WebSocketClient) SendRequestWithTimeout(method string, params any, time
 		Params:   params,
 		Response: make(chan WebSocketResponse, 1),
 	}
+	req.setKlippyState(typedState)
 	c.requests[id] = req
 	c.requestsMux.Unlock()
 
@@ -409,6 +442,19 @@ func (c *WebSocketClient) Subscribe(objects map[string]any) error {
 }
 
 func (c *WebSocketClient) SendNotification(method string, params any) error {
+	if reusableWorkers {
+		c.stateMux.RLock()
+		defer c.stateMux.RUnlock()
+		if c.state != WEB_SOCKET_STATE_CONNECTED {
+			return NewWebSocketNotConnectedError("not connected")
+		}
+		select {
+		case c.sendChan <- &WebSocketMessage{Method: method, Params: params, JSONRPC: "2.0"}:
+			return nil
+		default:
+			return NewWebSocketError("send buffer full", nil)
+		}
+	}
 	if c.GetState() != WEB_SOCKET_STATE_CONNECTED {
 		return NewWebSocketNotConnectedError("not connected")
 	}
