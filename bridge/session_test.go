@@ -112,7 +112,12 @@ func TestSessionDisconnectPolicyAndCleanup(t *testing.T) {
 			app.moonrakerClient = sessionMoonraker{p}
 			err := network.Session(ctx, func() bool { return true }, func(ctx context.Context) error {
 				defer func() { p.Lock(); p.cleanup = append(p.cleanup, "callback"); p.Unlock() }()
-				defer broker.Disconnect() // Match the ESP32 runner's partial-connect safeguard.
+				// Match the ESP32 runner's partial-connect safeguard.
+				defer func() {
+					if err := broker.Disconnect(); err != nil {
+						t.Errorf("disconnect MQTT safeguard: %v", err)
+					}
+				}()
 				return app.Run(ctx)
 			}, 5*time.Millisecond, time.Second)
 			// This is the point where ESP32 supervision may back off and reset.

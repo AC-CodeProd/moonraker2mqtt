@@ -96,7 +96,14 @@ func TestStartupErrorsPropagateWithoutCauseLog(t *testing.T) {
 			var out bytes.Buffer
 			app := New(cfg, broker, logger.NewSerial(&out, logger.INFO))
 			app.moonrakerClient = moon
-			err := network.Session(ctx, func() bool { return true }, func(c context.Context) error { defer broker.Disconnect(); return app.Run(c) }, time.Millisecond, time.Second)
+			err := network.Session(ctx, func() bool { return true }, func(c context.Context) error {
+				defer func() {
+					if err := broker.Disconnect(); err != nil {
+						t.Errorf("disconnect MQTT startup safeguard: %v", err)
+					}
+				}()
+				return app.Run(c)
+			}, time.Millisecond, time.Second)
 			expectedErr := sentinel
 			if testMCUSessionPolicy {
 				expectedErr = context.DeadlineExceeded
@@ -135,7 +142,14 @@ func TestStartupInitialWriteErrorCancellation(t *testing.T) {
 	var out bytes.Buffer
 	app := New(cfg, broker, logger.NewSerial(&out, logger.INFO))
 	app.moonrakerClient = sessionMoonraker{p}
-	err := network.Session(ctx, func() bool { return true }, func(c context.Context) error { defer broker.Disconnect(); return app.Run(c) }, time.Millisecond, time.Second)
+	err := network.Session(ctx, func() bool { return true }, func(c context.Context) error {
+		defer func() {
+			if err := broker.Disconnect(); err != nil {
+				t.Errorf("disconnect MQTT write-failure safeguard: %v", err)
+			}
+		}()
+		return app.Run(c)
+	}, time.Millisecond, time.Second)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("want cancellation, got %v", err)
 	}
