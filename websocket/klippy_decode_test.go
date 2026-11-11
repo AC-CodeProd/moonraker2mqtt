@@ -116,7 +116,7 @@ func TestKlippyTypedBorrowedMaximum(t *testing.T) {
 // schema lookup, decode, response dispatch and Request APIs, not a map conversion.
 func offlineResponder(c *WebSocketClient) func() {
 	c.state = WEB_SOCKET_STATE_CONNECTED
- c.lifecycle.generation = &connectionGeneration{stop:make(chan struct{})}
+	c.lifecycle.generation = &connectionGeneration{stop: make(chan struct{})}
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -149,7 +149,7 @@ func TestKlippyTypedRequestSemantics(t *testing.T) {
 		t.Fatal("disconnected accepted")
 	}
 	c.state = WEB_SOCKET_STATE_CONNECTED
- c.lifecycle.generation = &connectionGeneration{stop:make(chan struct{})}
+	c.lifecycle.generation = &connectionGeneration{stop: make(chan struct{})}
 	for i := 0; i < maxPendingRequests; i++ {
 		c.requests[i] = NewWebSocketRequest(i, "pending", nil, 30)
 	}
@@ -174,7 +174,7 @@ func TestKlippyTypedRequestSemantics(t *testing.T) {
 func TestKlippyTypedRequestRPCError(t *testing.T) {
 	c := typedTestClient()
 	c.state = WEB_SOCKET_STATE_CONNECTED
- c.lifecycle.generation = &connectionGeneration{stop:make(chan struct{})}
+	c.lifecycle.generation = &connectionGeneration{stop: make(chan struct{})}
 	done := make(chan struct{})
 	go func() {
 		defer close(done)

@@ -3,11 +3,11 @@
 package websocket
 
 import (
-"moonraker2mqtt/internal/diagjson"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"moonraker2mqtt/internal/diagjson"
 	wire "moonraker2mqtt/websocket/wire/lowmem"
 	"strings"
 	"time"

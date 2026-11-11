@@ -29,7 +29,7 @@ func TestTinyGoTest(t *testing.T) {
 }
 
 func TestStackAsyncNoIPv6(t *testing.T) {
-	name := filepath.Join(t.TempDir(),"mwe.elf") // test output outside frozen source
+	name := filepath.Join(t.TempDir(), "mwe.elf") // test output outside frozen source
 	cmd := exec.Command("go", "build", "-o="+name, "../../examples/min-working-example")
 	cmd.Env = append(os.Environ(), "GOOS=linux", "GOARCH=amd64")
 	out, err := cmd.CombinedOutput()

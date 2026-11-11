@@ -34,12 +34,21 @@ func TestKlippyTypedRequestOffline(t *testing.T) {
 		_ = wire.Message.Send(conn, `{"jsonrpc":"2.0","id":1,"result":{"klippy_state":"prêt 🌡","components":["large ignored"],"unknown":{"nested":[1,2,3]}}}`)
 	}))
 	defer server.Close()
- // Use the public constructor and Connect so the real generation owns conn,
- // worker start channels and completion joins. Keep the original typed value
- // and ignored-field assertions; the malformed legacy fixture is preserved r4.
- u,err:=url.Parse(server.URL);if err!=nil{t.Fatal(err)}
- cfg.Host=u.Hostname();cfg.Port,err=strconv.Atoi(u.Port());if err!=nil{t.Fatal(err)}
- if err=c.Connect(context.Background());err!=nil{t.Fatal(err)}
+	// Use the public constructor and Connect so the real generation owns conn,
+	// worker start channels and completion joins. Keep the original typed value
+	// and ignored-field assertions; the malformed legacy fixture is preserved r4.
+	u, err := url.Parse(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Host = u.Hostname()
+	cfg.Port, err = strconv.Atoi(u.Port())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = c.Connect(context.Background()); err != nil {
+		t.Fatal(err)
+	}
 	defer c.Disconnect()
 	state, err := typed.RequestKlippyState(context.Background())
 	if err != nil || state != "prêt 🌡" {

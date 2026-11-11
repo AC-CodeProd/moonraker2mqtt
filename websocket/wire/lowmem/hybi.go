@@ -72,7 +72,7 @@ type hybiFrameHeader struct {
 // A hybiFrameReader is a reader for hybi frame.
 type hybiFrameReader struct {
 	reader io.Reader
-	proof *proofStream
+	proof  *proofStream
 
 	header hybiFrameHeader
 	pos    int64

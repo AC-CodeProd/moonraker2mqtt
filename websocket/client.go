@@ -17,7 +17,7 @@ import (
 )
 
 type WebSocketClient struct {
-	lifecycle platformLifecycle
+	lifecycle    platformLifecycle
 	config       *config.MoonrakerConfig
 	listener     StatusListener
 	conn         *websocket.Conn
@@ -48,12 +48,14 @@ func NewWebSocketClient(config *config.MoonrakerConfig, listener StatusListener,
 		retry:        NewRetry(config.AutoReconnect, config.MaxReconnectAttempts, logger),
 		logger:       logger,
 	}
- c.initLifecycle()
- return c
+	c.initLifecycle()
+	return c
 }
 
 func (c *WebSocketClient) Connect(ctx context.Context) error {
-	if reusableWorkers { return c.connectReusable(ctx) }
+	if reusableWorkers {
+		return c.connectReusable(ctx)
+	}
 	err := c.connectOnce(ctx)
 	if err == nil {
 		c.retry.Reset()
@@ -167,7 +169,9 @@ func (c *WebSocketClient) reconnectLoop(ctx context.Context) {
 }
 
 func (c *WebSocketClient) Disconnect() error {
-	if reusableWorkers { return c.disconnectReusable() }
+	if reusableWorkers {
+		return c.disconnectReusable()
+	}
 	c.stateMux.Lock()
 	defer c.stateMux.Unlock()
 
@@ -224,7 +228,10 @@ func (c *WebSocketClient) UnregisterDataHandler(handler DataHandler) {
 func (c *WebSocketClient) Request(ctx context.Context, method string, params any) (*WebSocketResponse, error) {
 	if reusableWorkers {
 		m, err := c.requestReusable(ctx, method, params, 30*time.Second, false)
-		if err != nil { return nil, err }; return &WebSocketResponse{Result:m.Result, Error:m.Error}, nil
+		if err != nil {
+			return nil, err
+		}
+		return &WebSocketResponse{Result: m.Result, Error: m.Error}, nil
 	}
 	if ctx.Err() != nil {
 		return nil, fmt.Errorf("request cancelled: %w", ctx.Err())
@@ -348,7 +355,11 @@ func (c *WebSocketClient) handleMessage(message *WebSocketMessage) {
 		c.handlersMux.RUnlock()
 
 		for _, handler := range handlers {
-			if reusableWorkers { handler.ProcessDataMessage(message) } else { go handler.ProcessDataMessage(message) }
+			if reusableWorkers {
+				handler.ProcessDataMessage(message)
+			} else {
+				go handler.ProcessDataMessage(message)
+			}
 		}
 
 		if c.listener != nil {
@@ -366,7 +377,9 @@ func (c *WebSocketClient) SendRequestWithTimeout(method string, params any, time
 }
 
 func (c *WebSocketClient) sendRequestWithTimeout(method string, params any, timeout time.Duration, typedState bool) (*WebSocketMessage, error) {
-	if reusableWorkers { return c.requestReusable(context.Background(), method, params, timeout, typedState) }
+	if reusableWorkers {
+		return c.requestReusable(context.Background(), method, params, timeout, typedState)
+	}
 	if c.GetState() != WEB_SOCKET_STATE_CONNECTED {
 		return nil, NewWebSocketNotConnectedError("not connected")
 	}
@@ -430,9 +443,17 @@ func (c *WebSocketClient) Subscribe(objects map[string]any) error {
 
 func (c *WebSocketClient) SendNotification(method string, params any) error {
 	if reusableWorkers {
-		c.stateMux.RLock(); defer c.stateMux.RUnlock()
-		if c.state != WEB_SOCKET_STATE_CONNECTED { return NewWebSocketNotConnectedError("not connected") }
-		select { case c.sendChan <- &WebSocketMessage{Method:method, Params:params, JSONRPC:"2.0"}: return nil; default: return NewWebSocketError("send buffer full", nil) }
+		c.stateMux.RLock()
+		defer c.stateMux.RUnlock()
+		if c.state != WEB_SOCKET_STATE_CONNECTED {
+			return NewWebSocketNotConnectedError("not connected")
+		}
+		select {
+		case c.sendChan <- &WebSocketMessage{Method: method, Params: params, JSONRPC: "2.0"}:
+			return nil
+		default:
+			return NewWebSocketError("send buffer full", nil)
+		}
 	}
 	if c.GetState() != WEB_SOCKET_STATE_CONNECTED {
 		return NewWebSocketNotConnectedError("not connected")

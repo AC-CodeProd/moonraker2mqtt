@@ -72,7 +72,7 @@ func TestKlippyCollisionScannerBoundedAndValidated(t *testing.T) {
 func TestKlippyCollisionCancelledRequestPreflight(t *testing.T) {
 	c := typedTestClient()
 	c.state = WEB_SOCKET_STATE_CONNECTED
- c.lifecycle.generation = &connectionGeneration{stop:make(chan struct{})}
+	c.lifecycle.generation = &connectionGeneration{stop: make(chan struct{})}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	if _, err := c.RequestKlippyState(ctx); !errors.Is(err, context.Canceled) {
@@ -89,7 +89,7 @@ func TestKlippyCollisionCancelledRequestPreflight(t *testing.T) {
 func TestKlippyCollisionBorrowedOutOfOrder(t *testing.T) {
 	c := typedTestClient()
 	c.state = WEB_SOCKET_STATE_CONNECTED
- c.lifecycle.generation = &connectionGeneration{stop:make(chan struct{})}
+	c.lifecycle.generation = &connectionGeneration{stop: make(chan struct{})}
 	replies := make(chan []*WebSocketMessage, 1)
 	server := httptest.NewServer(wire.Handler(func(conn *wire.Conn) {
 		defer conn.Close()
@@ -155,7 +155,7 @@ func BenchmarkKlippyCollisionRequestOffline(b *testing.B) {
 		b.Run(body.name, func(b *testing.B) {
 			c := typedTestClient()
 			c.state = WEB_SOCKET_STATE_CONNECTED
- c.lifecycle.generation = &connectionGeneration{stop:make(chan struct{})}
+			c.lifecycle.generation = &connectionGeneration{stop: make(chan struct{})}
 			done := make(chan struct{})
 			go func() {
 				defer close(done)

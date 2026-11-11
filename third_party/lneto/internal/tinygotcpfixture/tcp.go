@@ -1,15 +1,33 @@
 // Private source-projection fixture: selected TinyGo methods verbatim.
 // Not linked in MCU firmware; generated spans authenticated separately.
 package tinygotcpfixture
-import("net";"time";"io")
+
+import (
+	"io"
+	"net"
+	"time"
+)
+
 type Addr = net.Addr
 type TCPAddr = net.TCPAddr
 type OpError = net.OpError
-type OwnedTCPHandle interface{Recv([]byte,time.Time)(int,error);Send([]byte,time.Time)(int,error);Close()error;GenerationInterrupt()(func()error,error)}
-type Device interface { Recv(int,[]byte,int,time.Time)(int,error);Send(int,[]byte,int,time.Time)(int,error);Close(int)error }
+type OwnedTCPHandle interface {
+	Recv([]byte, time.Time) (int, error)
+	Send([]byte, time.Time) (int, error)
+	Close() error
+	GenerationInterrupt() (func() error, error)
+}
+type Device interface {
+	Recv(int, []byte, int, time.Time) (int, error)
+	Send(int, []byte, int, time.Time) (int, error)
+	Close(int) error
+}
+
 var netdev Device
-func Bind(d Device, fd int)*TCPConn {netdev=d;return &TCPConn{fd:fd,net:"tcp4"}}
-func BindOwned(h OwnedTCPHandle)*TCPConn{return &TCPConn{owned:h,net:"tcp4"}}
+
+func Bind(d Device, fd int) *TCPConn      { netdev = d; return &TCPConn{fd: fd, net: "tcp4"} }
+func BindOwned(h OwnedTCPHandle) *TCPConn { return &TCPConn{owned: h, net: "tcp4"} }
+
 type TCPConn struct {
 	owned         OwnedTCPHandle
 	fd            int

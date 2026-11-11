@@ -1,8 +1,8 @@
 package config
 
 import (
-"moonraker2mqtt/internal/diagjson"
 	"fmt"
+	"moonraker2mqtt/internal/diagjson"
 	"strings"
 	"time"
 )

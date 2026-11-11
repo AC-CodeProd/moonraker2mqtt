@@ -11,7 +11,7 @@ import (
 func TestKlippyOutOfOrderSimultaneousRequests(t *testing.T) {
 	c := typedTestClient()
 	c.state = WEB_SOCKET_STATE_CONNECTED
- c.lifecycle.generation = &connectionGeneration{stop:make(chan struct{})}
+	c.lifecycle.generation = &connectionGeneration{stop: make(chan struct{})}
 	workerDone := make(chan struct{})
 	go func() {
 		defer close(workerDone)

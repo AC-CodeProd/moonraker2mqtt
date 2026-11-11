@@ -20,7 +20,7 @@ func collisionPipeline(t *testing.T, body string, typed bool) (string, error) {
 	t.Helper()
 	c := typedTestClient()
 	c.state = WEB_SOCKET_STATE_CONNECTED
- c.lifecycle.generation = &connectionGeneration{stop:make(chan struct{})}
+	c.lifecycle.generation = &connectionGeneration{stop: make(chan struct{})}
 	replies := make(chan string, 1)
 	server := httptest.NewServer(wire.Handler(func(conn *wire.Conn) {
 		defer conn.Close()

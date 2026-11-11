@@ -1,4 +1,5 @@
 //go:build !tinygo
 
 package websocket
-const requireNativeGeneration=false
+
+const requireNativeGeneration = false

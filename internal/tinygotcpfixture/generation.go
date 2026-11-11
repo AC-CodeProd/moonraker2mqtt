@@ -1,6 +1,9 @@
 //go:build native_storage_fixture && !tinygo
+
 package tinygotcpfixture
+
 import "errors"
+
 func (c *TCPConn) GenerationInterrupt() (func() error, error) {
 	if c.owned != nil {
 		return c.owned.GenerationInterrupt()

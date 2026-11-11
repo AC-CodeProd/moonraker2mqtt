@@ -13,8 +13,8 @@
 package websocket
 
 import (
-	"context"
 	"bufio"
+	"context"
 	"crypto/tls"
 	"errors"
 	"io"
@@ -102,7 +102,7 @@ type Config struct {
 	Dialer *net.Dialer
 	// OwnedDialContext is an explicit MCU-only capability supplied by lifecycle.
 	// It has no fallback and is used only by the serialized bounded ws dial.
-	OwnedDialContext func(context.Context,string,string)(net.Conn,error)
+	OwnedDialContext func(context.Context, string, string) (net.Conn, error)
 
 	handshakeData map[string]string
 }
@@ -307,8 +307,8 @@ func (ws *Conn) Request() *http.Request { return ws.request }
 
 // Codec represents a symmetric pair of functions that implement a codec.
 type Codec struct {
-	Marshal   func(v interface{}) (data []byte, payloadType byte, err error)
-	Unmarshal func(data []byte, payloadType byte, v interface{}) (err error)
+	Marshal        func(v interface{}) (data []byte, payloadType byte, err error)
+	Unmarshal      func(data []byte, payloadType byte, v interface{}) (err error)
 	UnmarshalProof func(data []byte, payloadType byte, v interface{}, proof FrameProof) error
 }
 
