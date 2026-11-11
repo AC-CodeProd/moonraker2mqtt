@@ -103,7 +103,14 @@ func TestPublicOwnerReuseJoinsAndTwoConnections(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	t.Cleanup(func() { o.Retire(); other.Retire() })
+	t.Cleanup(func() {
+		if err := o.Retire(); err != nil {
+			t.Errorf("retire reused owner: %v", err)
+		}
+		if err := other.Retire(); err != nil {
+			t.Errorf("retire concurrent owner: %v", err)
+		}
+	})
 	keep := f.dial(t, other, 1)
 	tx, rx, native := &o.tx[0], &o.rx[0], &o.conn
 	var old net.Conn
@@ -205,5 +212,7 @@ func TestPublicOwnerCancelAndPumpDrain(t *testing.T) {
 	}
 	f.paused.Store(false)
 	_ = f.dial(t, o, 0)
-	_ = o.Retire()
+	if err := o.Retire(); err != nil {
+		t.Fatalf("retire owner after canceled dial: %v", err)
+	}
 }

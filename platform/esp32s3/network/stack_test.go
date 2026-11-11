@@ -2,6 +2,7 @@ package network
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net"
 	"net/netip"
@@ -46,7 +47,11 @@ func TestBridgeTwoSockets(t *testing.T) {
 			t.Fatal("not a listener")
 		}
 		listeners = append(listeners, listener)
-		defer listener.Close()
+		defer func() {
+			if err := listener.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+				t.Errorf("close listener: %v", err)
+			}
+		}()
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	pumpDone := make(chan struct{})
@@ -89,7 +94,11 @@ func TestBridgeTwoSockets(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer b.Close(fd)
+		defer func() {
+			if err := b.Close(fd); err != nil && !errors.Is(err, net.ErrClosed) {
+				t.Errorf("close Berkeley socket %d: %v", fd, err)
+			}
+		}()
 		if err := b.Connect(fd, "", netip.AddrPortFrom(netip.AddrFrom4(sip), port)); err != nil {
 			t.Fatalf("second simultaneous MQTT/Moonraker socket unavailable (capacity=%d port=%d): %v", TCPPorts, port, err)
 		}
@@ -100,7 +109,11 @@ func TestBridgeTwoSockets(t *testing.T) {
 		select {
 		case c := <-peers:
 			remote = append(remote, c)
-			defer c.Close()
+			defer func() {
+				if err := c.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+					t.Errorf("close peer: %v", err)
+				}
+			}()
 		case err := <-acceptErr:
 			t.Fatal(err)
 		case <-time.After(3 * time.Second):
@@ -116,7 +129,9 @@ func TestBridgeTwoSockets(t *testing.T) {
 	// Both remain established while reading their distinct packets; no close-to-
 	// free-slot trick. The server's accept order is irrelevant (use local port).
 	for _, c := range remote {
-		c.SetDeadline(time.Now().Add(time.Second))
+		if err := c.SetDeadline(time.Now().Add(time.Second)); err != nil {
+			t.Fatalf("set peer deadline: %v", err)
+		}
 		buf := make([]byte, 2)
 		if _, err := io.ReadFull(c, buf); err != nil {
 			t.Fatal(err)
