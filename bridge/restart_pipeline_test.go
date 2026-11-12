@@ -6,6 +6,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"moonraker2mqtt/config"
@@ -32,7 +33,13 @@ func (w *pipelineWriter) Write(p []byte) (int, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if w.f != nil {
-		_, _ = w.f.Write(p)
+		n, err := w.f.Write(p)
+		if err != nil {
+			return n, err
+		}
+		if n != len(p) {
+			return n, io.ErrShortWrite
+		}
 	}
 	for _, line := range strings.Split(strings.TrimSpace(string(p)), "\n") {
 		select {
@@ -44,12 +51,49 @@ func (w *pipelineWriter) Write(p []byte) (int, error) {
 }
 
 type fakeMoonService struct {
-	mu         sync.Mutex
-	listener   net.Listener
-	server     *http.Server
-	conn       *wire.Conn
-	address    string
-	generation int
+	mu          sync.Mutex
+	listener    net.Listener
+	server      *http.Server
+	conn        *wire.Conn
+	address     string
+	generation  int
+	connections map[net.Conn]struct{}
+	handlers    sync.WaitGroup
+	serveDone   chan struct{}
+	firstErr    error
+}
+
+type pipelineConnKey struct{}
+
+func pipelinePeerShutdown(err error) bool {
+	return errors.Is(err, io.EOF) || errors.Is(err, net.ErrClosed) || pipelinePeerErrno(err)
+}
+
+func pipelineClose(t *testing.T, c io.Closer) {
+	t.Helper()
+	if err := c.Close(); err != nil && !pipelinePeerShutdown(err) {
+		t.Errorf("close pipeline fixture: %v", err)
+	}
+}
+
+func (s *fakeMoonService) record(err error) {
+	if err == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.firstErr == nil {
+		s.firstErr = err
+	}
+}
+
+func (s *fakeMoonService) finish(c net.Conn) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, exists := s.connections[c]; exists {
+		delete(s.connections, c)
+		s.handlers.Done()
+	}
 }
 
 func (s *fakeMoonService) start(t *testing.T) {
@@ -63,12 +107,20 @@ func (s *fakeMoonService) start(t *testing.T) {
 	s.address = l.Addr().String()
 	s.generation++
 	gen := s.generation
+	s.connections = make(map[net.Conn]struct{})
+	s.firstErr = nil
+	s.serveDone = make(chan struct{})
+	serveDone := s.serveDone
 	s.mu.Unlock()
 	handler := wire.Handler(func(c *wire.Conn) {
 		s.mu.Lock()
 		s.conn = c
 		s.mu.Unlock()
-		defer c.Close()
+		defer func() {
+			if err := c.Close(); err != nil && !pipelinePeerShutdown(err) {
+				s.record(err)
+			}
+		}()
 		for {
 			var m map[string]any
 			if e := wire.JSON.Receive(c, &m); e != nil {
@@ -90,20 +142,80 @@ func (s *fakeMoonService) start(t *testing.T) {
 			}
 		}
 	})
-	s.server = &http.Server{Handler: handler}
-	go s.server.Serve(l)
+	server := &http.Server{
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+			defer s.finish(req.Context().Value(pipelineConnKey{}).(net.Conn))
+			handler.ServeHTTP(w, req)
+		}),
+		ConnContext: func(ctx context.Context, c net.Conn) context.Context {
+			return context.WithValue(ctx, pipelineConnKey{}, c)
+		},
+		ConnState: func(c net.Conn, state http.ConnState) {
+			switch state {
+			case http.StateNew:
+				s.mu.Lock()
+				s.connections[c] = struct{}{}
+				s.handlers.Add(1)
+				s.mu.Unlock()
+			case http.StateClosed:
+				s.finish(c)
+			}
+		},
+	}
+	s.server = server
+	go func() {
+		defer close(serveDone)
+		if err := server.Serve(l); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			s.record(err)
+		}
+	}()
 }
-func (s *fakeMoonService) stop() {
+func (s *fakeMoonService) stop(t *testing.T) {
+	t.Helper()
 	s.mu.Lock()
+	server, serveDone := s.server, s.serveDone
+	s.server = nil
 	c := s.conn
 	s.conn = nil
 	l := s.listener
+	s.listener = nil
 	s.mu.Unlock()
+	if server == nil {
+		return
+	}
+	pipelineClose(t, server)
 	if l != nil {
-		_ = l.Close()
+		pipelineClose(t, l)
+	}
+	select {
+	case <-serveDone:
+	case <-time.After(4 * time.Second):
+		t.Error("HTTP fixture Serve did not join")
 	}
 	if c != nil {
-		_ = c.Close()
+		pipelineClose(t, c)
+	}
+	s.mu.Lock()
+	remaining := make([]net.Conn, 0, len(s.connections))
+	for conn := range s.connections {
+		remaining = append(remaining, conn)
+	}
+	s.mu.Unlock()
+	for _, conn := range remaining {
+		pipelineClose(t, conn)
+	}
+	joined := make(chan struct{})
+	go func() { s.handlers.Wait(); close(joined) }()
+	select {
+	case <-joined:
+	case <-time.After(4 * time.Second):
+		t.Error("HTTP fixture handlers did not join")
+	}
+	s.mu.Lock()
+	err := s.firstErr
+	s.mu.Unlock()
+	if err != nil {
+		t.Errorf("pipeline HTTP fixture failed: %v", err)
 	}
 }
 func readOfflinePacket(r *bufio.Reader) (byte, []byte, error) {
@@ -137,17 +249,34 @@ func TestOfflineMoonrakerRestartActualPipeline(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	defer broker.Close()
 	pubs := make(chan string, 256)
 	connects := 0
 	brokerDone := make(chan struct{})
+	acceptedConn := make(chan net.Conn, 1)
+	defer func() {
+		pipelineClose(t, broker)
+		select {
+		case c := <-acceptedConn:
+			pipelineClose(t, c)
+		case <-brokerDone:
+		case <-time.After(4 * time.Second):
+			t.Error("broker fixture accept did not join")
+			return
+		}
+		select {
+		case <-brokerDone:
+		case <-time.After(4 * time.Second):
+			t.Error("broker fixture did not join")
+		}
+	}()
 	go func() {
 		defer close(brokerDone)
 		c, e := broker.Accept()
 		if e != nil {
 			return
 		}
-		defer c.Close()
+		acceptedConn <- c
+		defer pipelineClose(t, c)
 		r := bufio.NewReader(c)
 		for {
 			h, p, e := readOfflinePacket(r)
@@ -162,7 +291,11 @@ func TestOfflineMoonrakerRestartActualPipeline(t *testing.T) {
 				if len(p) >= 2 {
 					n := int(binary.BigEndian.Uint16(p))
 					if len(p) >= 2+n {
-						pubs <- string(p[2:2+n]) + "=" + string(p[2+n:])
+						select {
+						case pubs <- string(p[2:2+n]) + "=" + string(p[2+n:]):
+						case <-ctx.Done():
+							return
+						}
 					}
 				}
 			case 12:
@@ -174,7 +307,7 @@ func TestOfflineMoonrakerRestartActualPipeline(t *testing.T) {
 	}()
 	s := &fakeMoonService{address: "127.0.0.1:0"}
 	s.start(t)
-	defer s.stop()
+	defer s.stop(t)
 	cfg := config.DefaultConfig()
 	cfg.Moonraker.Host = "127.0.0.1"
 	_, port, _ := net.SplitHostPort(s.address)
@@ -193,9 +326,18 @@ func TestOfflineMoonrakerRestartActualPipeline(t *testing.T) {
 		if e != nil {
 			t.Fatal(e)
 		}
-		defer w.f.Close()
+		defer func() {
+			if err := w.f.Close(); err != nil {
+				t.Errorf("close pipeline capture: %v", err)
+			}
+		}()
 	}
 	log := logger.NewSerial(w, logger.INFO)
+	defer func() {
+		if err := log.Err(); err != nil {
+			t.Errorf("write pipeline capture: %v", err)
+		}
+	}()
 	client := mqtt.NewNatiuClient(cfg.MQTT, log)
 	app := New(cfg, client, log)
 	done := make(chan error, 1)
@@ -227,7 +369,7 @@ func TestOfflineMoonrakerRestartActualPipeline(t *testing.T) {
 	}
 	awaitPub("/printer/info=")
 	for i := 0; i < 2; i++ {
-		s.stop()
+		s.stop(t)
 		t.Log("FAULT_NETWORK_STOP", i+1)
 		select {
 		case e := <-done:
