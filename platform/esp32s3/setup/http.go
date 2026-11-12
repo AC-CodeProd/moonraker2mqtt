@@ -25,7 +25,15 @@ type Portal struct {
 	Cancel      func()             // required if callbacks publish RTC; failure invalidates it, retry must resubmit
 }
 
-func (p *Portal) Handle(c net.Conn) (accepted bool) {
+func (p *Portal) Handle(c net.Conn) bool {
+	accepted, err := p.handle(c)
+	if err != nil {
+		return false
+	}
+	return accepted
+}
+
+func (p *Portal) handle(c net.Conn) (accepted bool, responseErr error) {
 	deadline := time.Now().Add(8 * time.Second)
 	capacity := responseCapacity(c)
 	staged := false
@@ -36,80 +44,71 @@ func (p *Portal) Handle(c net.Conn) (accepted bool) {
 		if deadline.Before(drainDeadline) {
 			drainDeadline = deadline
 		}
-		if awaitResponse(c, capacity, drainDeadline) != nil {
+		if err := awaitResponse(c, capacity, drainDeadline); err != nil {
 			accepted = false
+			responseErr = errors.Join(responseErr, err)
 		}
-		if c.Close() != nil {
+		if err := c.Close(); err != nil {
 			accepted = false
+			responseErr = errors.Join(responseErr, err)
 		}
 		if staged && !accepted && p.Cancel != nil {
 			p.Cancel()
 		}
 	}()
-	if c.SetDeadline(deadline) != nil {
-		return false
+	if err := c.SetDeadline(deadline); err != nil {
+		return false, err
 	} // fail closed if deadlines unsupported
 	r := bufio.NewReaderSize(c, 512)
 	method, path, h, err := request(r)
 	if err != nil {
-		respond(c, 400, "text/plain", "Requête invalide")
-		return
+		return false, respond(c, 400, "text/plain", "Requête invalide")
 	}
 	if method == "GET" && path == "/" {
 		page := strings.ReplaceAll(p.Page, "{{TOKEN}}", p.Token)
 		page = strings.ReplaceAll(page, "{{RECOVERY}}", strconv.FormatBool(p.Recovery))
 		page = strings.ReplaceAll(page, "{{UNAVAILABLE}}", strconv.FormatBool(p.Unavailable))
-		respond(c, 200, "text/html; charset=utf-8", page)
-		return
+		return false, respond(c, 200, "text/html; charset=utf-8", page)
 	}
 	if method != "POST" || (path != "/settings" && path != "/repair") {
-		respond(c, 404, "text/plain", "Introuvable")
-		return
+		return false, respond(c, 404, "text/plain", "Introuvable")
 	}
 	if h["content-type"] != "application/json" || h["x-setup-token"] != p.Token || p.Token == "" || h["origin"] != "http://192.168.4.1" {
-		respond(c, 403, "text/plain", "Accès refusé")
-		return
+		return false, respond(c, 403, "text/plain", "Accès refusé")
 	}
 	n, err := strconv.Atoi(h["content-length"])
 	if err != nil || n < 1 || n > MaxSettings {
-		respond(c, 413, "text/plain", "Corps trop grand")
-		return
+		return false, respond(c, 413, "text/plain", "Corps trop grand")
 	}
 	body := make([]byte, n)
 	if _, err = io.ReadFull(r, body); err != nil {
-		respond(c, 400, "text/plain", "Corps incomplet")
-		return
+		return false, respond(c, 400, "text/plain", "Corps incomplet")
 	}
 	if _, err = Decode(body); err != nil {
-		respond(c, 422, "text/plain", "Paramètres invalides")
-		return
+		return false, respond(c, 422, "text/plain", "Paramètres invalides")
 	}
 	if p.Unavailable {
-		respond(c, 503, "text/plain", "Stockage inaccessible ; diagnostic nécessaire, aucun effacement autorisé.")
-		return
+		return false, respond(c, 503, "text/plain", "Stockage inaccessible ; diagnostic nécessaire, aucun effacement autorisé.")
 	}
 	save := p.Save
 	if path == "/repair" {
 		if !p.Recovery || h["x-setup-repair"] != "erase-two-settings-slots" {
-			respond(c, 409, "text/plain", "Confirmation explicite de l’effacement des deux secteurs requise.")
-			return
+			return false, respond(c, 409, "text/plain", "Confirmation explicite de l’effacement des deux secteurs requise.")
 		}
 		save = p.Repair
 	} else if p.Recovery {
-		respond(c, 409, "text/plain", "Stockage corrompu, version non prise en charge ou générations ambiguës : utilisez la réparation confirmée, ou préservez les secteurs pour diagnostic.")
-		return
+		return false, respond(c, 409, "text/plain", "Stockage corrompu, version non prise en charge ou générations ambiguës : utilisez la réparation confirmée, ou préservez les secteurs pour diagnostic.")
 	}
 	staged = save != nil // cancellation also covers a partially failed stage
 	if save == nil || save(body) != nil {
-		respond(c, 503, "text/plain", "Sauvegarde indisponible")
-		return
+		return false, respond(c, 503, "text/plain", "Sauvegarde indisponible")
 	}
 	// 202 is NOT a durable-save claim. A failed write/ACK/close cancels the
 	// pending operation (including repair); no automatic reset or later replay.
-	if respond(c, 202, "text/plain; charset=utf-8", "Paramètres préparés. Redémarrage pour enregistrer ; vérifiez ensuite le port série.") != nil {
-		return false
+	if err := respond(c, 202, "text/plain; charset=utf-8", "Paramètres préparés. Redémarrage pour enregistrer ; vérifiez ensuite le port série."); err != nil {
+		return false, err
 	}
-	return true
+	return true, nil
 }
 func request(r *bufio.Reader) (string, string, map[string]string, error) {
 	total := 0
