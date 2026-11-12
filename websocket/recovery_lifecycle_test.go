@@ -4,6 +4,7 @@ package websocket
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -60,8 +61,8 @@ func actualWorkerIDs() []string {
 }
 func TestRecoveryFortyActualCyclesStableWorkersAndRetainedHeap(t *testing.T) {
 	peers := make(chan *wire.Conn, 1)
-	server := httptest.NewServer(wire.Handler(func(p *wire.Conn) {
-		defer p.Close()
+	server := bufioFixtureServer(t, wire.Handler(func(p *wire.Conn) {
+		defer closeBufioPeer(t, p)
 		peers <- p
 		for {
 			var m WebSocketMessage
@@ -76,7 +77,7 @@ func TestRecoveryFortyActualCyclesStableWorkersAndRetainedHeap(t *testing.T) {
 	defer server.Close()
 	before := actualWorkerIDs()
 	c := recoveryClient(t, server.URL)
-	defer c.Disconnect()
+	defer disconnectBufioFixture(t, c)
 	var starts []string
 	var readStart, writeStart, cancelStart any
 	var retained10, retained40 uint64
@@ -136,11 +137,26 @@ func TestRecoveryHandshakeCancellationAndFailedHTTPDrainSockets(t *testing.T) {
 	var accepted, closed atomic.Int64
 	var wg sync.WaitGroup
 	acceptDone := make(chan struct{})
+	var stopOnce sync.Once
+	stop := func() {
+		stopOnce.Do(func() {
+			if err := listener.Close(); err != nil {
+				t.Errorf("close recovery listener: %v", err)
+			}
+			// Stop Accept before waiting: it owns all handler registrations.
+			<-acceptDone
+			wg.Wait()
+		})
+	}
+	t.Cleanup(stop)
 	go func() {
 		defer close(acceptDone)
 		for {
 			p, e := listener.Accept()
 			if e != nil {
+				if !errors.Is(e, net.ErrClosed) {
+					t.Errorf("accept recovery peer: %v", e)
+				}
 				return
 			}
 			accepted.Add(1)
@@ -148,13 +164,23 @@ func TestRecoveryHandshakeCancellationAndFailedHTTPDrainSockets(t *testing.T) {
 			go func() {
 				defer wg.Done()
 				defer closed.Add(1)
-				defer p.Close()
-				_ = p.SetReadDeadline(time.Now().Add(2 * time.Second))
-				_, _ = io.Copy(io.Discard, p)
+				defer func() {
+					if err := p.Close(); err != nil {
+						t.Errorf("close recovery handshake peer: %v", err)
+					}
+				}()
+				if err := p.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+					t.Errorf("set recovery peer deadline: %v", err)
+					return
+				}
+				if _, err := io.Copy(io.Discard, p); err != nil {
+					t.Errorf("drain recovery handshake peer: %v", err)
+				}
 			}()
 		}
 	}()
 	c := recoveryClient(t, "http://"+listener.Addr().String())
+	defer disconnectBufioFixture(t, c)
 	for i := 0; i < 12; i++ {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
 		start := time.Now()
@@ -173,16 +199,14 @@ func TestRecoveryHandshakeCancellationAndFailedHTTPDrainSockets(t *testing.T) {
 	if e = c.Disconnect(); e != nil {
 		t.Fatal(e)
 	}
-	_ = listener.Close()
-	<-acceptDone
-	wg.Wait()
+	stop()
 	if accepted.Load() != 12 || accepted.Load() != closed.Load() {
 		t.Fatalf("sockets accepted=%d closed=%d", accepted.Load(), closed.Load())
 	}
 	bad := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(403) }))
 	defer bad.Close()
 	d := recoveryClient(t, bad.URL)
-	defer d.Disconnect()
+	defer disconnectBufioFixture(t, d)
 	for i := 0; i < 8; i++ {
 		if e = d.Connect(context.Background()); e == nil {
 			t.Fatal("failed HTTP status accepted")
@@ -193,8 +217,8 @@ func TestRecoveryHandshakeCancellationAndFailedHTTPDrainSockets(t *testing.T) {
 
 func TestRecoveryConcurrentCancellationPendingQueueDrain(t *testing.T) {
 	peers := make(chan *wire.Conn, 1)
-	server := httptest.NewServer(wire.Handler(func(p *wire.Conn) {
-		defer p.Close()
+	server := bufioFixtureServer(t, wire.Handler(func(p *wire.Conn) {
+		defer closeBufioPeer(t, p)
 		peers <- p
 		for {
 			var m WebSocketMessage
@@ -205,7 +229,7 @@ func TestRecoveryConcurrentCancellationPendingQueueDrain(t *testing.T) {
 	}))
 	defer server.Close()
 	c := recoveryClient(t, server.URL)
-	defer c.Disconnect()
+	defer disconnectBufioFixture(t, c)
 	if e := c.Connect(context.Background()); e != nil {
 		t.Fatal(e)
 	}
@@ -233,7 +257,7 @@ func TestRecoveryConcurrentCancellationPendingQueueDrain(t *testing.T) {
 	if pending != 0 {
 		t.Fatalf("cancelled pending=%d", pending)
 	}
-	_ = peer.Close()
+	closeBufioPeer(t, peer)
 	waitRecoveryState(t, func() bool { return !c.IsConnected() })
 	if e := c.Connect(context.Background()); e != nil {
 		t.Fatal(e)
@@ -242,5 +266,5 @@ func TestRecoveryConcurrentCancellationPendingQueueDrain(t *testing.T) {
 	if len(c.sendChan) != 0 {
 		t.Fatal("old send queue retained")
 	}
-	_ = peer.Close()
+	closeBufioPeer(t, peer)
 }
