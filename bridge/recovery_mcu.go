@@ -90,7 +90,7 @@ func (a *App) monitorReusable(ctx context.Context) error {
 			if !a.moonrakerClient.IsConnected() {
 				if !mrWaiting {
 					if mrID == ^uint64(0) {
-						return fmt.Errorf("Moonraker recovery counter exhausted")
+						return fmt.Errorf("moonraker recovery counter exhausted")
 					}
 					mrID++
 					mrWaiting = true
