@@ -15,9 +15,25 @@ import (
 	"time"
 )
 
+func disconnectSameBootFixture(t *testing.T, c *NatiuClient) {
+	t.Helper()
+	if err := c.Disconnect(); err != nil {
+		t.Errorf("disconnect same-boot fixture: %v", err)
+	}
+}
+
+func joinSameBootFixture(t *testing.T, done <-chan struct{}) {
+	t.Helper()
+	select {
+	case <-done:
+	case <-time.After(4 * time.Second):
+		t.Error("same-boot fixture worker did not join")
+	}
+}
+
 func TestSameBootWorkersAndDecoderSurviveRetryAndGC(t *testing.T) {
 	c := NewNatiuClient(config.DefaultConfig().MQTT, logger.NewSerial(io.Discard, logger.ERROR))
-	defer c.Disconnect()
+	defer disconnectSameBootFixture(t, c)
 	var backing *byte
 	var rx, dispatch, cancel chan struct{}
 	var wires []*packetConn
@@ -37,9 +53,10 @@ func TestSameBootWorkersAndDecoderSurviveRetryAndGC(t *testing.T) {
 		a, b := net.Pipe()
 		c.dial = func(string, string) (net.Conn, error) { return a, nil }
 		peer := make(chan struct{})
+		t.Cleanup(func() { closeNatiuFixture(t, a); closeNatiuFixture(t, b); joinSameBootFixture(t, peer) })
 		go func() {
 			defer close(peer)
-			defer b.Close()
+			defer closeNatiuFixture(t, b)
 			r := bufio.NewReader(b)
 			if _, e := readPacket(r); e != nil {
 				return
@@ -80,14 +97,26 @@ func TestSameBootCancellationInterruptsHandshakeAndPublish(t *testing.T) {
 	for _, stage := range []string{"handshake", "publish"} {
 		t.Run(stage, func(t *testing.T) {
 			c := NewNatiuClient(config.DefaultConfig().MQTT, logger.NewSerial(io.Discard, logger.ERROR))
-			defer c.Disconnect()
 			ctx, cancel := context.WithCancel(context.Background())
+			defer func() {
+				cancel()
+				// Cancellation closes the pipe independently of RX. Wait until RX
+				// has retired before requesting the final, checked Disconnect.
+				c.mu.Lock()
+				rxDone := c.done
+				c.mu.Unlock()
+				if rxDone != nil {
+					joinSameBootFixture(t, rxDone)
+				}
+				disconnectSameBootFixture(t, c)
+			}()
 			defer cancel()
 			a, b := net.Pipe()
-			defer b.Close()
+			defer closeNatiuFixture(t, b)
 			c.dial = func(string, string) (net.Conn, error) { return a, nil }
 			reached := make(chan struct{})
 			peer := make(chan struct{})
+			t.Cleanup(func() { closeNatiuFixture(t, a); closeNatiuFixture(t, b); joinSameBootFixture(t, peer) })
 			go func() {
 				defer close(peer)
 				r := bufio.NewReader(b)
@@ -103,7 +132,9 @@ func TestSameBootCancellationInterruptsHandshakeAndPublish(t *testing.T) {
 				<-ctx.Done()
 			}()
 			connected := make(chan error, 1)
-			go func() { connected <- c.ConnectContext(ctx) }()
+			connectFinished := make(chan struct{})
+			go func() { defer close(connectFinished); connected <- c.ConnectContext(ctx) }()
+			t.Cleanup(func() { joinSameBootFixture(t, connectFinished) })
 			<-reached
 			if stage == "handshake" {
 				cancel()
@@ -120,7 +151,12 @@ func TestSameBootCancellationInterruptsHandshakeAndPublish(t *testing.T) {
 					t.Fatal(e)
 				}
 				wrote := make(chan error, 1)
-				go func() { wrote <- c.Publish("offline/state", make([]byte, 4096), 0, false, 3) }()
+				publishFinished := make(chan struct{})
+				go func() {
+					defer close(publishFinished)
+					wrote <- c.Publish("offline/state", make([]byte, 4096), 0, false, 3)
+				}()
+				t.Cleanup(func() { joinSameBootFixture(t, publishFinished) })
 				// A pipe with no broker reads cannot accept even the first publication byte.
 				cancel()
 				select {
@@ -138,7 +174,7 @@ func TestSameBootCancellationInterruptsHandshakeAndPublish(t *testing.T) {
 }
 func TestSameBootGenerationCounterDoesNotWrap(t *testing.T) {
 	c := NewNatiuClient(config.DefaultConfig().MQTT, logger.NewSerial(io.Discard, logger.ERROR))
-	defer c.Disconnect()
+	defer disconnectSameBootFixture(t, c)
 	c.lifecycle.generation = ^uint64(0)
 	dialed := false
 	c.dial = func(string, string) (net.Conn, error) { dialed = true; return nil, io.EOF }

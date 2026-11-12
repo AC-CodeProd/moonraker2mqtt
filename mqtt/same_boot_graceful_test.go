@@ -32,17 +32,17 @@ func (g *gracefulGateConn) Close() error {
 }
 func TestSameBootGracefulDisconnectDoesNotCloseBeforeFinalWrite(t *testing.T) {
 	a, b := net.Pipe()
-	defer b.Close()
 	wire := &gracefulGateConn{Conn: a, entered: make(chan struct{}), release: make(chan struct{}), closed: make(chan struct{})}
 	c := NewNatiuClient(config.DefaultConfig().MQTT, logger.NewSerial(io.Discard, logger.ERROR))
 	c.dial = func(string, string) (net.Conn, error) { return wire, nil }
 	var release sync.Once
 	unblock := func() { release.Do(func() { close(wire.release) }) }
-	defer func() { unblock(); _ = c.Disconnect() }()
+	defer func() { unblock(); disconnectSameBootFixture(t, c) }()
 	peer := make(chan struct{})
+	t.Cleanup(func() { closeNatiuFixture(t, a); closeNatiuFixture(t, b); joinSameBootFixture(t, peer) })
 	go func() {
 		defer close(peer)
-		defer b.Close()
+		defer closeNatiuFixture(t, b)
 		r := bufio.NewReader(b)
 		if _, e := readPacket(r); e != nil {
 			return
@@ -56,7 +56,9 @@ func TestSameBootGracefulDisconnectDoesNotCloseBeforeFinalWrite(t *testing.T) {
 		t.Fatal(e)
 	}
 	done := make(chan error, 1)
-	go func() { done <- c.Disconnect() }()
+	disconnectFinished := make(chan struct{})
+	go func() { defer close(disconnectFinished); done <- c.Disconnect() }()
+	t.Cleanup(func() { joinSameBootFixture(t, disconnectFinished) })
 	select {
 	case <-wire.entered:
 	case <-time.After(time.Second):

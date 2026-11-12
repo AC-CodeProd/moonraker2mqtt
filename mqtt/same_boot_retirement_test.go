@@ -32,11 +32,12 @@ func TestSameBootRetirementJoinsDispatchBeforeDial(t *testing.T) {
 	entered, release := make(chan struct{}), make(chan struct{})
 	var once sync.Once
 	unblock := func() { once.Do(func() { close(release) }) }
-	defer func() { unblock(); _ = c.Disconnect() }()
+	defer func() { unblock(); disconnectSameBootFixture(t, c) }()
 	brokerDone := make(chan struct{})
+	t.Cleanup(func() { closeNatiuFixture(t, a); closeNatiuFixture(t, b); joinSameBootFixture(t, brokerDone) })
 	go func() {
 		defer close(brokerDone)
-		defer b.Close()
+		defer closeNatiuFixture(t, b)
 		r := bufio.NewReader(b)
 		if _, e := readPacket(r); e != nil {
 			return
@@ -55,8 +56,13 @@ func TestSameBootRetirementJoinsDispatchBeforeDial(t *testing.T) {
 		frame := []byte{0x30, byte(2 + len(topic) + 1), 0, byte(len(topic))}
 		frame = append(frame, topic...)
 		frame = append(frame, 'x')
-		_, _ = b.Write(frame)
-		<-entered
+		if !writeNatiuFixture(t, b, frame) {
+			return
+		}
+		select {
+		case <-entered:
+		case <-release:
+		}
 	}()
 	if e := c.Connect(); e != nil {
 		t.Fatal(e)
@@ -75,7 +81,9 @@ func TestSameBootRetirementJoinsDispatchBeforeDial(t *testing.T) {
 		t.Fatal("RX close not reached")
 	}
 	returned := make(chan error, 1)
-	go func() { returned <- c.Connect() }()
+	reconnectFinished := make(chan struct{})
+	go func() { defer close(reconnectFinished); returned <- c.Connect() }()
+	t.Cleanup(func() { joinSameBootFixture(t, reconnectFinished) })
 	premature := false
 	select {
 	case <-called:
