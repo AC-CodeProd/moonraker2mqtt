@@ -31,7 +31,7 @@ func (l *pingLog) Write(p []byte) (int, error) {
 func (l *pingLog) text() string {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	return l.Buffer.String()
+	return l.String()
 }
 
 func pingRegressionClient(t *testing.T, output io.Writer, broker func(net.Conn)) *NatiuClient {
@@ -39,11 +39,13 @@ func pingRegressionClient(t *testing.T, output io.Writer, broker func(net.Conn))
 	c := NewNatiuClient(config.DefaultConfig().MQTT, logger.NewSerial(output, logger.DEBUG))
 	a, b := net.Pipe()
 	c.dial = func(string, string) (net.Conn, error) { return a, nil }
+	brokerDone := make(chan struct{})
+	t.Cleanup(func() { finishNatiuFixture(t, c, a, b, brokerDone) })
 	go func() {
-		defer b.Close()
+		defer close(brokerDone)
+		defer closeNatiuFixture(t, b)
 		broker(b)
 	}()
-	t.Cleanup(func() { c.Disconnect() })
 	if err := c.Connect(); err != nil {
 		t.Fatal(err)
 	}
@@ -66,7 +68,10 @@ func TestNatiuPingResponseAfterRepeatedIdle(t *testing.T) {
 			published := make(chan int, 1)
 			var logs pingLog
 			c := pingRegressionClient(t, &logs, func(b net.Conn) {
-				b.SetDeadline(time.Now().Add(55 * time.Second))
+				if err := b.SetDeadline(time.Now().Add(55 * time.Second)); err != nil {
+					t.Errorf("set ping-response fixture deadline: %v", err)
+					return
+				}
 				r := bufio.NewReader(b)
 				if _, err := readPacket(r); err != nil {
 					brokerErr <- err
@@ -110,6 +115,14 @@ func TestNatiuPingResponseAfterRepeatedIdle(t *testing.T) {
 							brokerErr <- fmt.Errorf("unexpected packet: %#v", p)
 							return
 						}
+					}
+				}()
+				defer func() {
+					closeNatiuFixture(t, b)
+					select {
+					case <-drained:
+					case <-time.After(4 * time.Second):
+						t.Error("ping-response fixture drain did not join")
 					}
 				}()
 				for i := 0; i < 2; i++ {
@@ -213,7 +226,10 @@ func TestNatiuPingMissingResponseTimesOut(t *testing.T) {
 			ping := make(chan time.Time, 1)
 			var logs pingLog
 			c := pingRegressionClient(t, &logs, func(b net.Conn) {
-				b.SetDeadline(time.Now().Add(40 * time.Second))
+				if err := b.SetDeadline(time.Now().Add(40 * time.Second)); err != nil {
+					t.Errorf("set missing-ping fixture deadline: %v", err)
+					return
+				}
 				r := bufio.NewReader(b)
 				if _, err := readPacket(r); err != nil {
 					return
@@ -232,6 +248,14 @@ func TestNatiuPingMissingResponseTimesOut(t *testing.T) {
 						if p.header>>4 == 12 {
 							ping <- time.Now()
 						}
+					}
+				}()
+				defer func() {
+					closeNatiuFixture(t, b)
+					select {
+					case <-drained:
+					case <-time.After(4 * time.Second):
+						t.Error("missing-ping fixture drain did not join")
 					}
 				}()
 				if !traffic {
@@ -283,5 +307,49 @@ func TestNatiuPingMissingResponseTimesOut(t *testing.T) {
 			}
 			t.Log(strings.TrimSpace(text))
 		})
+	}
+}
+
+func TestPingFixtureLogText(t *testing.T) {
+	var logs pingLog
+	const expected = "fixture ping log\n"
+	if n, err := logs.Write([]byte(expected)); err != nil || n != len(expected) {
+		t.Fatalf("log write=%d error=%v", n, err)
+	}
+	if got := logs.text(); got != expected {
+		t.Fatalf("log text=%q want %q", got, expected)
+	}
+}
+
+func TestPingRegressionFixtureJoinsBroker(t *testing.T) {
+	finished := make(chan struct{})
+	t.Run("connection", func(t *testing.T) {
+		pingRegressionClient(t, io.Discard, func(b net.Conn) {
+			defer close(finished)
+			r := bufio.NewReader(b)
+			if _, err := readPacket(r); err != nil {
+				t.Error(err)
+				return
+			}
+			if !writeNatiuFixture(t, b, []byte{0x20, 2, 0, 0}) {
+				return
+			}
+			packet, err := readPacket(r)
+			if err != nil || packet.header != 0xe0 {
+				t.Errorf("ping fixture disconnect=%#v error=%v", packet, err)
+				return
+			}
+			time.Sleep(20 * time.Millisecond)
+		})
+	})
+	select {
+	case <-finished:
+	default:
+		t.Error("ping fixture returned before broker joined")
+		select {
+		case <-finished:
+		case <-time.After(time.Second):
+			t.Fatal("ping fixture broker did not finish")
+		}
 	}
 }
