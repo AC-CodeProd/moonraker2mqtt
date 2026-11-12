@@ -323,7 +323,9 @@ func (c *NatiuClient) readLoop(client *native.Client, wire *packetConn, queue ch
 		// Native Disconnect marks the client disconnected before writing its
 		// packet. Let the caller finish that write before closing the wire.
 		if !errors.Is(client.Err(), errShutdown) {
-			wire.closeCause(3)
+			if err := wire.closeCause(3); err != nil {
+				c.log.Warn("MQTT receive cleanup close failed: %v", err)
+			}
 		}
 	}()
 	lastPing := time.Now()
@@ -390,8 +392,12 @@ func (c *NatiuClient) readLoop(client *native.Client, wire *packetConn, queue ch
 		}
 	}
 	if client.IsConnected() {
-		_ = wire.closeCause(3)
-		client.Disconnect(errors.New("MQTT transport stopped"))
+		if err := wire.closeCause(3); err != nil {
+			c.log.Warn("MQTT receive cleanup close failed: %v", err)
+		}
+		if err := client.Disconnect(errors.New("MQTT transport stopped")); err != nil {
+			c.log.Warn("MQTT receive cleanup disconnect failed: %v", err)
+		}
 	}
 }
 func (c *NatiuClient) dispatch(queue chan incoming, done chan struct{}) {

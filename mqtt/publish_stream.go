@@ -34,7 +34,9 @@ func (c *packetConn) writePublish(topic []byte, payload []byte, retain bool) err
 		if TransportDiagnostics == "true" {
 			c.observeWrite(2, 0, 0, time.Until(deadline).Nanoseconds(), err, true)
 		}
-		c.closeCause(5)
+		if closeErr := c.closeCause(5); closeErr != nil {
+			return errors.Join(err, closeErr)
+		}
 		return err
 	}
 	n := h.Put(c.txPrefix[:5])
@@ -48,7 +50,9 @@ func (c *packetConn) writePublish(topic []byte, payload []byte, retain bool) err
 	if err != nil {
 		// A partial MQTT packet is not resumable/retryable (QoS0). Close even for
 		// zero-byte failures so a following ping cannot be appended to its suffix.
-		c.closeCause(6)
+		if closeErr := c.closeCause(6); closeErr != nil {
+			return errors.Join(err, closeErr)
+		}
 	}
 	return err
 }
