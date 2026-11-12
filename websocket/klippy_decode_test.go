@@ -10,7 +10,6 @@ import (
 	"moonraker2mqtt/config"
 	"moonraker2mqtt/logger"
 	wire "moonraker2mqtt/websocket/wire/lowmem"
-	"net/http/httptest"
 	"reflect"
 	"strconv"
 	"strings"
@@ -88,8 +87,8 @@ func TestKlippyTypedBorrowedMaximum(t *testing.T) {
 	markState(c, 7)
 	body := `{"id":7,"result":{"klippy_state":"prêt 🌡","ignored":"` + strings.Repeat("x", 15000) + `"},"params":{"owned":["saved"]},"error":{"code":-9,"message":"owned","data":["saved"]}}`
 	body += strings.Repeat(" ", 16384-len(body))
-	server := httptest.NewServer(wire.Handler(func(conn *wire.Conn) {
-		defer conn.Close()
+	server := bufioFixtureServer(t, wire.Handler(func(conn *wire.Conn) {
+		defer closeBufioPeer(t, conn)
 		_ = wire.Message.Send(conn, body)
 		_ = wire.Message.Send(conn, `{"method":"replacement","params":{"owned":["changed"]}}`)
 	}))
@@ -98,7 +97,7 @@ func TestKlippyTypedBorrowedMaximum(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer conn.Close()
+	defer closeBufioPeer(t, conn)
 	configureConnection(conn)
 	var first, second WebSocketMessage
 	if err := c.receiveMessage(conn, &first); err != nil {

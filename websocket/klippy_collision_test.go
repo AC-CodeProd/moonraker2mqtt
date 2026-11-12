@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	wire "moonraker2mqtt/websocket/wire/lowmem"
-	"net/http/httptest"
 	"reflect"
 	"strconv"
 	"strings"
@@ -22,8 +21,8 @@ func collisionPipeline(t *testing.T, body string, typed bool) (string, error) {
 	c.state = WEB_SOCKET_STATE_CONNECTED
 	c.lifecycle.generation = &connectionGeneration{stop: make(chan struct{})}
 	replies := make(chan string, 1)
-	server := httptest.NewServer(wire.Handler(func(conn *wire.Conn) {
-		defer conn.Close()
+	server := bufioFixtureServer(t, wire.Handler(func(conn *wire.Conn) {
+		defer closeBufioPeer(t, conn)
 		response := <-replies
 		for _, frame := range []string{
 			`{"method":"unhandled","params":{"text":"notification"}}`,
@@ -41,7 +40,7 @@ func collisionPipeline(t *testing.T, body string, typed bool) (string, error) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer conn.Close()
+	defer closeBufioPeer(t, conn)
 	configureConnection(conn)
 	done := make(chan struct{})
 	go func() {

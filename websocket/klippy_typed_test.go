@@ -8,7 +8,6 @@ import (
 	"moonraker2mqtt/config"
 	"moonraker2mqtt/logger"
 	wire "moonraker2mqtt/websocket/wire/lowmem"
-	"net/http/httptest"
 	"net/url"
 	"strconv"
 	"testing"
@@ -25,8 +24,8 @@ func TestKlippyTypedRequestOffline(t *testing.T) {
 	if !ok {
 		t.Fatal("MCU concrete client lacks actual typed state request")
 	}
-	server := httptest.NewServer(wire.Handler(func(conn *wire.Conn) {
-		defer conn.Close()
+	server := bufioFixtureServer(t, wire.Handler(func(conn *wire.Conn) {
+		defer closeBufioPeer(t, conn)
 		var req WebSocketMessage
 		if wire.JSON.Receive(conn, &req) != nil {
 			return
@@ -49,7 +48,7 @@ func TestKlippyTypedRequestOffline(t *testing.T) {
 	if err = c.Connect(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	defer c.Disconnect()
+	defer disconnectBufioFixture(t, c)
 	state, err := typed.RequestKlippyState(context.Background())
 	if err != nil || state != "prêt 🌡" {
 		t.Fatalf("state=%q err=%v", state, err)

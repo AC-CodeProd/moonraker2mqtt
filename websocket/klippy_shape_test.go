@@ -49,6 +49,6 @@ func TestKlippyTypedNullShapeAndNilContext(t *testing.T) {
 				t.Fatal("nil context semantics changed")
 			}
 		}()
-		_, _ = c.RequestKlippyState(nil)
+		_, _ = c.RequestKlippyState(nil) //nolint:staticcheck // SA1012: intentional nil-context panic regression.
 	}()
 }

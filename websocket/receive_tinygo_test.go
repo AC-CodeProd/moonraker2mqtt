@@ -5,7 +5,6 @@ package websocket
 import (
 	"encoding/json"
 	websocket "moonraker2mqtt/websocket/wire/lowmem"
-	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
@@ -18,8 +17,8 @@ func TestMoonrakerReservedReceiveRetainedAndInterleaved(t *testing.T) {
 	if _, ok := any(new(RPCError)).(json.Unmarshaler); ok {
 		t.Fatal("RPC error custom decoding needs ownership audit")
 	}
-	server := httptest.NewServer(websocket.Handler(func(conn *websocket.Conn) {
-		defer conn.Close()
+	server := bufioFixtureServer(t, websocket.Handler(func(conn *websocket.Conn) {
+		defer closeBufioPeer(t, conn)
 		body := `{"method":"notify","params":{"text":"saved"},"result":["retained"],"error":{"message":"error"}}`
 		body += strings.Repeat(" ", 13456-len(body))
 		for _, body := range []string{body, `{"method":"next","params":{"text":"replacement"}}`} {
@@ -39,7 +38,7 @@ func TestMoonrakerReservedReceiveRetainedAndInterleaved(t *testing.T) {
 				t.Error(err)
 				return
 			}
-			defer conn.Close()
+			defer closeBufioPeer(t, conn)
 			configureConnection(conn)
 			var first, second WebSocketMessage
 			if err = receiveMessage(conn, &first); err != nil {

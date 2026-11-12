@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	wire "moonraker2mqtt/websocket/wire/lowmem"
-	"net/http/httptest"
 	"strconv"
 	"strings"
 	"testing"
@@ -91,8 +90,8 @@ func TestKlippyCollisionBorrowedOutOfOrder(t *testing.T) {
 	c.state = WEB_SOCKET_STATE_CONNECTED
 	c.lifecycle.generation = &connectionGeneration{stop: make(chan struct{})}
 	replies := make(chan []*WebSocketMessage, 1)
-	server := httptest.NewServer(wire.Handler(func(conn *wire.Conn) {
-		defer conn.Close()
+	server := bufioFixtureServer(t, wire.Handler(func(conn *wire.Conn) {
+		defer closeBufioPeer(t, conn)
 		requests := <-replies
 		_ = wire.Message.Send(conn, `{"method":"unhandled","params":[{"owned":"notify"}]}`)
 		for i := len(requests) - 1; i >= 0; i-- {
@@ -106,7 +105,7 @@ func TestKlippyCollisionBorrowedOutOfOrder(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer conn.Close()
+	defer closeBufioPeer(t, conn)
 	configureConnection(conn)
 	done := make(chan struct{})
 	go func() {
