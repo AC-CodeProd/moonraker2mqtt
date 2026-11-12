@@ -112,7 +112,11 @@ func (a *App) Run(ctx context.Context) error {
 
 	a.diagnosticStage = 2
 	if endSessionOnDisconnect {
-		defer a.moonrakerClient.Disconnect()
+		defer func() {
+			if err := a.moonrakerClient.Disconnect(); err != nil {
+				a.logger.Error("Failed to disconnect from Moonraker: %v", err)
+			}
+		}()
 	}
 	if err := a.connectMoonraker(ctx); err != nil {
 		return fmt.Errorf("failed to connect to Moonraker: %w", err)
@@ -167,7 +171,11 @@ func (a *App) Run(ctx context.Context) error {
 	}
 
 	// Preserve hosted reconnection and context-driven shutdown behavior.
-	go a.periodicMonitoring(ctx)
+	go func() {
+		if err := a.periodicMonitoring(ctx); err != nil {
+			a.logger.Error("Periodic monitoring stopped: %v", err)
+		}
+	}()
 	<-ctx.Done()
 	a.logger.Info("Shutting down...")
 	return nil
@@ -233,7 +241,7 @@ func (a *App) periodicMonitoring(ctx context.Context) error {
 				}
 				if !moonrakerConnected {
 					a.diagnosticStage = 6
-					return fmt.Errorf("Moonraker disconnected; session recovery required")
+					return fmt.Errorf("moonraker disconnected; session recovery required")
 				}
 			}
 
