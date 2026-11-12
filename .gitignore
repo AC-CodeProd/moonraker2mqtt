@@ -26,6 +26,8 @@
 
 !.github/workflows/release-please.yml
 !.github/workflows/auto-pull-requests.yml
+!.github/workflows/lint.yml
+!/.golangci.yml
 !.release-please-config.json
 !.release-please-manifest.json
 !VERSION

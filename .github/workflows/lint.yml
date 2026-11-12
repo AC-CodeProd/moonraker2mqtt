@@ -1,0 +1,48 @@
+name: Go lint
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: golangci-lint (${{ matrix.variant }})
+    runs-on: ubuntu-latest
+    continue-on-error: false
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - variant: host
+            extra-args: ""
+          # Hosted adapter checks, not a TinyGo target or hardware qualification.
+          - variant: mcu-adapters
+            extra-args: --build-tags=natiu,lowmem,native_storage_fixture
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+          cache: true
+          cache-dependency-path: go.sum
+
+      - name: Run golangci-lint
+        uses: golangci/golangci-lint-action@4afd733a84b1f43292c63897423277bb7f4313a9 # v8
+        env:
+          GOFLAGS: -buildvcs=false
+        with:
+          version: v2.4.0
+          install-mode: binary
+          verify: true
+          only-new-issues: false
+          args: >-
+            --config=.golangci.yml
+            ./...
+            ${{ matrix.extra-args }}

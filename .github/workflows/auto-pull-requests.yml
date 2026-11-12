@@ -15,6 +15,11 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  lint:
+    uses: ./.github/workflows/lint.yml
+    permissions:
+      contents: read
+
   test:
     runs-on: ubuntu-latest
     steps:
@@ -65,7 +70,7 @@ jobs:
 
   open-or-update-pull-request:
     runs-on: ubuntu-latest
-    needs: test
+    needs: [test, lint]
     steps:
       - name: Extract branch
         id: ctx
@@ -99,6 +104,7 @@ jobs:
               "✅ **Tests Status:**",
               "- Code formatting: Verified",
               "- Static analysis (go vet): Passed", 
+              "- Static analysis (golangci-lint): Passed (host and MCU adapters)",
               "- Unit tests: Passed",
               "- Test coverage: Generated (see artifacts)",
               "",
