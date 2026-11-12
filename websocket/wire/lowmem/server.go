@@ -6,6 +6,7 @@ package websocket
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -14,41 +15,51 @@ import (
 func newServerConn(rwc io.ReadWriteCloser, buf *bufio.ReadWriter, req *http.Request, config *Config, handshake func(*Config, *http.Request) error) (conn *Conn, err error) {
 	var hs serverHandshaker = &hybiServerHandshaker{Config: config}
 	code, err := hs.ReadHandshake(buf.Reader, req)
-	if err == ErrBadWebSocketVersion {
-		fmt.Fprintf(buf, "HTTP/1.1 %03d %s\r\n", code, http.StatusText(code))
-		fmt.Fprintf(buf, "Sec-WebSocket-Version: %s\r\n", SupportedProtocolVersion)
-		buf.WriteString("\r\n")
-		buf.WriteString(err.Error())
-		buf.Flush()
-		return
-	}
 	if err != nil {
-		fmt.Fprintf(buf, "HTTP/1.1 %03d %s\r\n", code, http.StatusText(code))
-		buf.WriteString("\r\n")
-		buf.WriteString(err.Error())
-		buf.Flush()
-		return
+		version := ""
+		if err == ErrBadWebSocketVersion {
+			version = SupportedProtocolVersion
+		}
+		return nil, writeHandshakeFailure(buf, code, version, err.Error(), err)
 	}
 	if handshake != nil {
 		err = handshake(config, req)
 		if err != nil {
 			code = http.StatusForbidden
-			fmt.Fprintf(buf, "HTTP/1.1 %03d %s\r\n", code, http.StatusText(code))
-			buf.WriteString("\r\n")
-			buf.Flush()
-			return
+			return nil, writeHandshakeFailure(buf, code, "", "", err)
 		}
 	}
 	err = hs.AcceptHandshake(buf.Writer)
 	if err != nil {
 		code = http.StatusBadRequest
-		fmt.Fprintf(buf, "HTTP/1.1 %03d %s\r\n", code, http.StatusText(code))
-		buf.WriteString("\r\n")
-		buf.Flush()
-		return
+		return nil, writeHandshakeFailure(buf, code, "", "", err)
 	}
 	conn = hs.NewServerConn(buf, rwc, req)
 	return
+}
+
+// writeHandshakeFailure preserves the rejection cause if its response cannot be sent.
+func writeHandshakeFailure(buf *bufio.ReadWriter, code int, version, body string, cause error) error {
+	if _, err := fmt.Fprintf(buf, "HTTP/1.1 %03d %s\r\n", code, http.StatusText(code)); err != nil {
+		return errors.Join(cause, err)
+	}
+	if version != "" {
+		if _, err := fmt.Fprintf(buf, "Sec-WebSocket-Version: %s\r\n", version); err != nil {
+			return errors.Join(cause, err)
+		}
+	}
+	if _, err := buf.WriteString("\r\n"); err != nil {
+		return errors.Join(cause, err)
+	}
+	if body != "" {
+		if _, err := buf.WriteString(body); err != nil {
+			return errors.Join(cause, err)
+		}
+	}
+	if err := buf.Flush(); err != nil {
+		return errors.Join(cause, err)
+	}
+	return cause
 }
 
 // Server represents a server of a WebSocket.
