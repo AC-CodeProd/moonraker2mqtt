@@ -282,18 +282,24 @@ func (handler *hybiFrameHandler) HandleFrame(frame frameReader) (frameReader, er
 	if handler.conn.IsServerConn() {
 		// The client MUST mask all frames sent to the server.
 		if frame.(*hybiFrameReader).header.MaskingKey == nil {
-			handler.WriteClose(closeStatusProtocolError)
+			if err := handler.WriteClose(closeStatusProtocolError); err != nil {
+				return nil, err
+			}
 			return nil, io.EOF
 		}
 	} else {
 		// The server MUST NOT mask all frames.
 		if frame.(*hybiFrameReader).header.MaskingKey != nil {
-			handler.WriteClose(closeStatusProtocolError)
+			if err := handler.WriteClose(closeStatusProtocolError); err != nil {
+				return nil, err
+			}
 			return nil, io.EOF
 		}
 	}
 	if header := frame.HeaderReader(); header != nil {
-		io.Copy(io.Discard, header)
+		if err := handler.conn.drainFrame(header); err != nil {
+			return nil, err
+		}
 	}
 	switch frame.PayloadType() {
 	case ContinuationFrame:
@@ -308,7 +314,9 @@ func (handler *hybiFrameHandler) HandleFrame(frame frameReader) (frameReader, er
 		if err != nil && err != io.EOF && err != io.ErrUnexpectedEOF {
 			return nil, err
 		}
-		handler.conn.drainFrame(frame)
+		if err := handler.conn.drainFrame(frame); err != nil {
+			return nil, err
+		}
 		if frame.PayloadType() == PingFrame {
 			if _, err := handler.WritePong(b[:n]); err != nil {
 				return nil, err
@@ -328,8 +336,14 @@ func (handler *hybiFrameHandler) WriteClose(status int) (err error) {
 	}
 	msg := make([]byte, 2)
 	binary.BigEndian.PutUint16(msg, uint16(status))
-	_, err = w.Write(msg)
-	w.Close()
+	n, err := w.Write(msg)
+	if err == nil && n != len(msg) {
+		err = io.ErrShortWrite
+	}
+	closeErr := w.Close()
+	if err == nil {
+		err = closeErr
+	}
 	return err
 }
 
@@ -341,7 +355,13 @@ func (handler *hybiFrameHandler) WritePong(msg []byte) (n int, err error) {
 		return 0, err
 	}
 	n, err = w.Write(msg)
-	w.Close()
+	if err == nil && n != len(msg) {
+		err = io.ErrShortWrite
+	}
+	closeErr := w.Close()
+	if err == nil {
+		err = closeErr
+	}
 	return n, err
 }
 
