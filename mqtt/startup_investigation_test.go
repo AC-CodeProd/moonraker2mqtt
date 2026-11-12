@@ -39,13 +39,27 @@ func TestInvestigationNatiuHandshakeRejectOrEOF(t *testing.T) {
 			a, b := net.Pipe()
 			c.dial = func(string, string) (net.Conn, error) { return a, nil }
 			joined := make(chan struct{})
+			t.Cleanup(func() { finishNatiuFixture(t, c, a, b, joined) })
 			go func() {
 				defer close(joined)
-				defer b.Close()
-				b.SetDeadline(time.Now().Add(time.Second))
-				readPacket(bufio.NewReader(b))
+				defer closeNatiuFixture(t, b)
+				if err := b.SetDeadline(time.Now().Add(time.Second)); err != nil {
+					t.Errorf("set startup fixture deadline: %v", err)
+					return
+				}
+				packet, err := readPacket(bufio.NewReader(b))
+				if err != nil {
+					t.Errorf("read startup fixture CONNECT: %v", err)
+					return
+				}
+				if packet.header != 0x10 {
+					t.Errorf("startup fixture expected CONNECT, got %#v", packet)
+					return
+				}
 				if reject {
-					b.Write([]byte{0x20, 2, 0, 5})
+					if !writeNatiuFixture(t, b, []byte{0x20, 2, 0, 5}) {
+						return
+					}
 				}
 			}()
 			if err := c.Connect(); err == nil {
