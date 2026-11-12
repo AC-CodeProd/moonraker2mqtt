@@ -78,10 +78,17 @@ type Server struct {
 
 // ServeHTTP implements the http.Handler interface for a WebSocket
 func (s Server) ServeHTTP(w http.ResponseWriter, req *http.Request) {
-	s.serveWebSocket(w, req)
+	if err := s.ServeHTTPWithError(w, req); err != nil {
+		// The hijacked connection is already closed. Do not send another HTTP
+		// response; callers needing the error can use ServeHTTPWithError.
+		return
+	}
 }
 
-func (s Server) serveWebSocket(w http.ResponseWriter, req *http.Request) {
+// ServeHTTPWithError serves a WebSocket request and returns handshake and close
+// errors after closing the hijacked connection. Hijack failures and handler
+// panics retain ServeHTTP's existing panic behavior.
+func (s Server) ServeHTTPWithError(w http.ResponseWriter, req *http.Request) (err error) {
 	rwc, buf, err := w.(http.Hijacker).Hijack()
 	if err != nil {
 		panic("Hijack failed: " + err.Error())
@@ -89,15 +96,20 @@ func (s Server) serveWebSocket(w http.ResponseWriter, req *http.Request) {
 	// The server should abort the WebSocket connection if it finds
 	// the client did not send a handshake that matches with protocol
 	// specification.
-	defer rwc.Close()
+	defer func() {
+		if closeErr := rwc.Close(); closeErr != nil {
+			err = errors.Join(err, closeErr)
+		}
+	}()
 	conn, err := newServerConn(rwc, buf, req, &s.Config, s.Handshake)
 	if err != nil {
-		return
+		return err
 	}
 	if conn == nil {
 		panic("unexpected nil conn")
 	}
 	s.Handler(conn)
+	return nil
 }
 
 // Handler is a simple interface to a WebSocket browser client.
@@ -120,5 +132,5 @@ func checkOrigin(config *Config, req *http.Request) (err error) {
 // ServeHTTP implements the http.Handler interface for a WebSocket
 func (h Handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	s := Server{Handler: h, Handshake: checkOrigin}
-	s.serveWebSocket(w, req)
+	s.ServeHTTP(w, req)
 }
