@@ -6,6 +6,7 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/binary"
+	"errors"
 	"io"
 	"moonraker2mqtt/config"
 	"moonraker2mqtt/logger"
@@ -17,6 +18,45 @@ import (
 type wirePacket struct {
 	header byte
 	data   []byte
+}
+
+func writeNatiuFixture(t *testing.T, w io.Writer, p []byte) bool {
+	t.Helper()
+	n, err := w.Write(p)
+	if err == nil && n != len(p) {
+		err = io.ErrShortWrite
+	}
+	if err != nil {
+		t.Errorf("write MQTT fixture: %v", err)
+		return false
+	}
+	return true
+}
+
+func closeNatiuFixture(t *testing.T, c io.Closer) {
+	t.Helper()
+	if err := c.Close(); err != nil {
+		t.Errorf("close MQTT fixture: %v", err)
+	}
+}
+
+func finishNatiuFixture(t *testing.T, c *NatiuClient, a, b net.Conn, done <-chan struct{}) {
+	t.Helper()
+	if err := c.Disconnect(); err != nil {
+		t.Errorf("disconnect MQTT fixture: %v", err)
+	}
+	closeNatiuFixture(t, a)
+	select {
+	case <-done:
+	case <-time.After(4 * time.Second):
+		t.Error("MQTT fixture broker did not join")
+		closeNatiuFixture(t, b)
+		select {
+		case <-done:
+		case <-time.After(4 * time.Second):
+			t.Error("MQTT fixture broker did not join after local close")
+		}
+	}
 }
 
 func readPacket(r *bufio.Reader) (wirePacket, error) {
@@ -51,32 +91,46 @@ func TestNatiuWireLifecycle(t *testing.T) {
 	a, b := net.Pipe()
 	client.dial = func(string, string) (net.Conn, error) { return a, nil }
 	seen := make(chan wirePacket, 8)
-	errs := make(chan error, 1)
+	brokerDone := make(chan struct{})
+	t.Cleanup(func() { finishNatiuFixture(t, client, a, b, brokerDone) })
 	go func() {
-		defer b.Close()
+		defer close(brokerDone)
+		defer closeNatiuFixture(t, b)
 		reader := bufio.NewReader(b)
 		for {
 			packet, err := readPacket(reader)
 			if err != nil {
-				errs <- err
+				if !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrClosedPipe) {
+					t.Errorf("read MQTT fixture: %v", err)
+				}
 				return
 			}
 			seen <- packet
 			switch packet.header >> 4 {
 			case 1:
-				b.Write([]byte{0x20, 2, 0, 0})
+				if !writeNatiuFixture(t, b, []byte{0x20, 2, 0, 0}) {
+					return
+				}
 			case 8:
-				b.Write([]byte{0x90, 3, packet.data[0], packet.data[1], 0})
+				if !writeNatiuFixture(t, b, []byte{0x90, 3, packet.data[0], packet.data[1], 0}) {
+					return
+				}
 				topic := []byte("moonraker/commands")
 				payload := []byte(`{"command":"restart"}`)
 				frame := []byte{0x30, byte(2 + len(topic) + len(payload)), 0, byte(len(topic))}
 				frame = append(frame, topic...)
 				frame = append(frame, payload...)
-				b.Write(frame)
+				if !writeNatiuFixture(t, b, frame) {
+					return
+				}
 			case 10:
-				b.Write([]byte{0xb0, 2, packet.data[0], packet.data[1]})
+				if !writeNatiuFixture(t, b, []byte{0xb0, 2, packet.data[0], packet.data[1]}) {
+					return
+				}
 			case 12:
-				b.Write([]byte{0xd0, 0})
+				if !writeNatiuFixture(t, b, []byte{0xd0, 0}) {
+					return
+				}
 			case 14:
 				return
 			}
@@ -85,7 +139,7 @@ func TestNatiuWireLifecycle(t *testing.T) {
 	if err := client.Connect(); err != nil {
 		t.Fatal(err)
 	}
-	defer client.Disconnect()
+
 	if !client.IsConnected() {
 		t.Fatal("not connected")
 	}
@@ -147,11 +201,13 @@ func regressionClient(t *testing.T, broker func(net.Conn)) *NatiuClient {
 	c := NewNatiuClient(config.DefaultConfig().MQTT, logger.NewSerial(io.Discard, logger.INFO))
 	a, b := net.Pipe()
 	c.dial = func(string, string) (net.Conn, error) { return a, nil }
+	brokerDone := make(chan struct{})
+	t.Cleanup(func() { finishNatiuFixture(t, c, a, b, brokerDone) })
 	go func() {
-		defer b.Close()
+		defer close(brokerDone)
+		defer closeNatiuFixture(t, b)
 		broker(b)
 	}()
-	t.Cleanup(func() { c.Disconnect() })
 	if err := c.Connect(); err != nil {
 		t.Fatal(err)
 	}
@@ -164,14 +220,28 @@ func TestNatiuUnsolicitedSubackIsRejectedAndShutdownJoins(t *testing.T) {
 		if _, err := readPacket(r); err != nil {
 			return
 		}
-		b.SetDeadline(time.Now().Add(2 * time.Second))
+		if err := b.SetDeadline(time.Now().Add(2 * time.Second)); err != nil {
+			t.Errorf("set unsolicited SUBACK fixture deadline: %v", err)
+			return
+		}
 		if _, err := b.Write([]byte{0x20, 2, 0, 0}); err != nil {
 			return
 		}
 		// Pinned natiu rejects this before the adapter queues an acknowledgement:
 		// one return code does not match zero pending subscription filters.
-		b.Write([]byte{0x90, 3, 0, 1, 0})
-		readPacket(r)
+		if !writeNatiuFixture(t, b, []byte{0x90, 3, 0, 1, 0}) {
+			return
+		}
+		packet, err := readPacket(r)
+		if err != nil {
+			if !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrClosedPipe) {
+				t.Errorf("read unsolicited SUBACK fixture shutdown: %v", err)
+			}
+			return
+		}
+		if packet.header != 0xe0 || len(packet.data) != 0 {
+			t.Errorf("unexpected unsolicited SUBACK shutdown packet: %#v", packet)
+		}
 	})
 	select {
 	case <-c.done:
@@ -255,16 +325,22 @@ func TestNatiuRejectedResubscribeDoesNotUseHistoricalTopic(t *testing.T) {
 			}
 			switch p.header >> 4 {
 			case 1:
-				b.Write([]byte{0x20, 2, 0, 0})
+				if !writeNatiuFixture(t, b, []byte{0x20, 2, 0, 0}) {
+					return
+				}
 			case 8:
 				subscriptions++
 				code := byte(0)
 				if subscriptions == 2 || subscriptions == 4 {
 					code = 0x80
 				}
-				b.Write([]byte{0x90, 3, p.data[0], p.data[1], code})
+				if !writeNatiuFixture(t, b, []byte{0x90, 3, p.data[0], p.data[1], code}) {
+					return
+				}
 			case 10:
-				b.Write([]byte{0xb0, 2, p.data[0], p.data[1]})
+				if !writeNatiuFixture(t, b, []byte{0xb0, 2, p.data[0], p.data[1]}) {
+					return
+				}
 			case 14:
 				return
 			}
@@ -321,7 +397,29 @@ func TestNatiuIncompletePacketRemainsBounded(t *testing.T) {
 				// QoS0 PUBLISH with 100 bytes of payload promised but not
 				// completed. Keep reading so native error DISCONNECT cannot block.
 				drained := make(chan struct{})
-				go func() { io.Copy(io.Discard, r); close(drained) }()
+				stoppingDrain := make(chan struct{})
+				go func() {
+					defer close(drained)
+					if _, err := io.Copy(io.Discard, r); err != nil {
+						select {
+						case <-stoppingDrain:
+							if !errors.Is(err, io.ErrClosedPipe) {
+								t.Errorf("drain MQTT fixture: %v", err)
+							}
+						default:
+							t.Errorf("drain MQTT fixture: %v", err)
+						}
+					}
+				}()
+				defer func() {
+					close(stoppingDrain)
+					closeNatiuFixture(t, b)
+					select {
+					case <-drained:
+					case <-time.After(4 * time.Second):
+						t.Error("MQTT fixture drain did not join")
+					}
+				}()
 				started <- time.Now()
 				if _, err := b.Write([]byte{0x30, 103, 0, 1, 'x'}); err != nil {
 					return
@@ -369,5 +467,40 @@ func TestNatiuRejectsUnsupportedAndOversized(t *testing.T) {
 	c.cfg.UseTLS = true
 	if err := c.Connect(); err == nil {
 		t.Fatal("TLS accepted")
+	}
+}
+
+func TestNatiuRegressionFixtureJoinsBroker(t *testing.T) {
+	finished := make(chan struct{})
+	t.Run("connection", func(t *testing.T) {
+		regressionClient(t, func(b net.Conn) {
+			defer close(finished)
+			r := bufio.NewReader(b)
+			if _, err := readPacket(r); err != nil {
+				t.Error(err)
+				return
+			}
+			if _, err := b.Write([]byte{0x20, 2, 0, 0}); err != nil {
+				t.Error(err)
+				return
+			}
+			packet, err := readPacket(r)
+			if err != nil || packet.header != 0xe0 {
+				t.Errorf("fixture disconnect=%#v error=%v", packet, err)
+				return
+			}
+			// RX retirement is not proof that the fake broker's own work joined.
+			time.Sleep(20 * time.Millisecond)
+		})
+	})
+	select {
+	case <-finished:
+	default:
+		t.Error("MQTT fixture returned before broker joined")
+		select {
+		case <-finished:
+		case <-time.After(time.Second):
+			t.Fatal("MQTT fixture broker did not finish")
+		}
 	}
 }
