@@ -27,7 +27,7 @@ func budgetClient(t *testing.T, mode byte) (*NatiuClient, context.Context) {
 		peers.Add(1)
 		go func() {
 			defer peers.Done()
-			defer b.Close()
+			defer closeNatiuFixture(t, b)
 			r := bufio.NewReader(b)
 			for {
 				p, e := readPacket(r)

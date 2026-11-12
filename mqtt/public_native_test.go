@@ -132,7 +132,11 @@ func TestPublicNativeMQTTBudgetRecovery(t *testing.T) {
 		t.Fatal(e)
 	}
 	c.lifecycle.native = mock
-	defer c.Disconnect()
+	defer func() {
+		if err := c.Disconnect(); err != nil {
+			t.Errorf("disconnect public-native MQTT fixture: %v", err)
+		}
+	}()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	var old net.Conn
