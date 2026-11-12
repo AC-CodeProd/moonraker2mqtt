@@ -216,7 +216,9 @@ again:
 	n, err = ws.frameReader.Read(msg)
 	if err == io.EOF {
 		if trailer := ws.TrailerReader(); trailer != nil {
-			ws.drainFrame(trailer)
+			if err := ws.drainFrame(trailer); err != nil {
+				return n, err
+			}
 		}
 		ws.frameReader = nil
 		goto again
@@ -234,7 +236,13 @@ func (ws *Conn) Write(msg []byte) (n int, err error) {
 		return 0, err
 	}
 	n, err = w.Write(msg)
-	w.Close()
+	if err == nil && n != len(msg) {
+		err = io.ErrShortWrite
+	}
+	closeErr := w.Close()
+	if err == nil {
+		err = closeErr
+	}
 	return n, err
 }
 
@@ -324,8 +332,14 @@ func (cd Codec) Send(ws *Conn, v interface{}) (err error) {
 	if err != nil {
 		return err
 	}
-	_, err = w.Write(data)
-	w.Close()
+	n, err := w.Write(data)
+	if err == nil && n != len(data) {
+		err = io.ErrShortWrite
+	}
+	closeErr := w.Close()
+	if err == nil {
+		err = closeErr
+	}
 	return err
 }
 
