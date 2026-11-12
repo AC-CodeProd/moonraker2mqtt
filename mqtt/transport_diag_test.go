@@ -123,13 +123,21 @@ func TestTransportFirstErrorNotOverwritten(t *testing.T) {
 	enableDiag(t)
 	raw := &diagTestConn{err: io.ErrShortWrite}
 	c := &packetConn{Conn: raw}
-	c.Write([]byte{1})
+	if n, err := c.Write([]byte{1}); n != 0 || err != io.ErrShortWrite {
+		t.Errorf("first diagnostic write: n=%d error=%v, want 0 and io.ErrShortWrite", n, err)
+	}
 	raw.mu.Lock()
 	raw.err = net.ErrClosed
 	raw.mu.Unlock()
-	c.Write([]byte{2})
-	c.Close()
-	c.Close()
+	if n, err := c.Write([]byte{2}); n != 0 || err != net.ErrClosed {
+		t.Errorf("second diagnostic write: n=%d error=%v, want 0 and net.ErrClosed", n, err)
+	}
+	if err := c.Close(); err != nil {
+		t.Errorf("first diagnostic Close: %v", err)
+	}
+	if err := c.Close(); err != nil {
+		t.Errorf("second diagnostic Close: %v", err)
+	}
 	seq, w, _, cl := state(c)
 	if seq != 3 || !w || !cl || raw.writes != 2 || raw.closes != 2 {
 		t.Fatal("bounded records changed original calls", seq)
@@ -152,6 +160,16 @@ func TestTransportNominalNoEvents(t *testing.T) {
 	}
 	t.Log("REACHED nominal-no-events")
 }
+func checkConcurrentTransportResult(t *testing.T, operation string, err error, afterClose bool) {
+	t.Helper()
+	if afterClose && err == nil {
+		t.Errorf("%s unexpectedly succeeded after Close", operation)
+	}
+	if err != nil && !errors.Is(err, net.ErrClosed) {
+		t.Errorf("unexpected %s result (afterClose=%t): %v", operation, afterClose, err)
+	}
+}
+
 func TestTransportConcurrentNativePingWriteClose(t *testing.T) {
 	enableDiag(t)
 	raw := &diagTestConn{}
@@ -170,7 +188,7 @@ func TestTransportConcurrentNativePingWriteClose(t *testing.T) {
 			if i == 50 {
 				<-closed
 			}
-			c.writePublish([]byte("test"), []byte("synthetic"), false)
+			checkConcurrentTransportResult(t, "publish", c.writePublish([]byte("test"), []byte("synthetic"), false), i >= 50)
 		}
 	}()
 	go func() {
@@ -179,13 +197,15 @@ func TestTransportConcurrentNativePingWriteClose(t *testing.T) {
 			if i == 50 {
 				<-closed
 			}
-			tx.WriteSimple(native.PacketPingreq)
+			checkConcurrentTransportResult(t, "native PING", tx.WriteSimple(native.PacketPingreq), i >= 50)
 		}
 	}()
 	go func() {
 		defer wg.Done()
 		for i := 0; i < 100; i++ {
-			c.closeCause(4)
+			if err := c.closeCause(4); err != nil {
+				t.Errorf("concurrent diagnostic Close: %v", err)
+			}
 			if i == 0 {
 				close(closed)
 			}
