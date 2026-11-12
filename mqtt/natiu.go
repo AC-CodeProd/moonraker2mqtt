@@ -87,12 +87,12 @@ type packetConn struct {
 
 // beginReceive separates idle polling from packet completion. The native
 // decoder cannot resume a partially consumed packet after a timeout.
-func (c *packetConn) beginReceive() {
+func (c *packetConn) beginReceive() error {
 	c.receive = true
 	c.packetDeadline = time.Time{}
 	c.prefixLen = 0
 	c.packetBytes = 0
-	c.Conn.SetReadDeadline(time.Now().Add(receiveIdleTimeout))
+	return c.Conn.SetReadDeadline(time.Now().Add(receiveIdleTimeout))
 }
 
 func (c *packetConn) Read(p []byte) (int, error) {
@@ -104,7 +104,9 @@ func (c *packetConn) Read(p []byte) (int, error) {
 		if c.packetDeadline.Before(deadline) {
 			deadline = c.packetDeadline
 		}
-		c.Conn.SetReadDeadline(deadline)
+		if err := c.Conn.SetReadDeadline(deadline); err != nil {
+			return 0, err
+		}
 	}
 	c.stopMu.Lock()
 	closed := c.closed
@@ -154,6 +156,9 @@ func (c *packetConn) Write(p []byte) (int, error) {
 	seterr := c.Conn.SetWriteDeadline(deadline)
 	if TransportDiagnostics == "true" && seterr != nil {
 		c.observeWrite(1, len(p), 0, time.Until(deadline).Nanoseconds(), seterr, true)
+	}
+	if seterr != nil {
+		return 0, seterr
 	}
 	n, err := c.Conn.Write(p)
 	if TransportDiagnostics == "true" && err != nil {
@@ -287,7 +292,9 @@ func (c *NatiuClient) ConnectContext(ctx context.Context) error {
 	vc.CleanSession = true
 	vc.Username = []byte(c.cfg.Username)
 	vc.Password = []byte(c.cfg.Password)
-	wire.SetDeadline(time.Now().Add(10 * time.Second))
+	if err = wire.SetDeadline(time.Now().Add(10 * time.Second)); err != nil {
+		return c.failedConnect(g, err)
+	}
 	handshakeCtx, handshakeCancel := context.WithTimeout(ctx, 10*time.Second)
 	defer handshakeCancel()
 	if err = client.Connect(handshakeCtx, wire, &vc); err != nil {
@@ -296,7 +303,9 @@ func (c *NatiuClient) ConnectContext(ctx context.Context) error {
 	if ctx.Err() != nil {
 		return c.failedConnect(g, ctx.Err())
 	}
-	wire.SetDeadline(time.Time{})
+	if err = wire.SetDeadline(time.Time{}); err != nil {
+		return c.failedConnect(g, err)
+	}
 	c.mu.Lock()
 	c.client = client
 	c.conn = wire
@@ -322,7 +331,10 @@ func (c *NatiuClient) readLoop(client *native.Client, wire *packetConn, queue ch
 	var pingBytes, pingPackets uint32
 	var lastPacketType byte
 	for client.IsConnected() {
-		wire.beginReceive()
+		if err := wire.beginReceive(); err != nil {
+			c.log.Warn("MQTT receive deadline failed: %v", err)
+			break
+		}
 		if err := client.HandleNext(); err != nil {
 			c.log.Warn("MQTT receive stopped: %v (packet_bytes=%d)", err, wire.packetBytes)
 			break
@@ -492,7 +504,9 @@ func (c *NatiuClient) Subscribe(topic string, handler MessageHandler) error {
 			c.mu.Unlock()
 		}
 	}()
-	wire.SetWriteDeadline(time.Now().Add(10 * time.Second))
+	if err := wire.SetWriteDeadline(time.Now().Add(10 * time.Second)); err != nil {
+		return err
+	}
 	id := c.nextID()
 	wire.stopMu.Lock()
 	exhausted := wire.subRequests >= subscriptionBudget
@@ -548,7 +562,9 @@ func (c *NatiuClient) Unsubscribe(topic string) error {
 	if err := tx.WriteUnsubscribe(native.VariablesUnsubscribe{PacketIdentifier: c.nextID(), Topics: [][]byte{[]byte(topic)}}); err != nil {
 		return err
 	}
-	wire.SetWriteDeadline(time.Now().Add(10 * time.Second))
+	if err := wire.SetWriteDeadline(time.Now().Add(10 * time.Second)); err != nil {
+		return err
+	}
 	n, err := wire.Write(packet.Bytes())
 	if err != nil {
 		return err

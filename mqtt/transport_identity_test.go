@@ -51,12 +51,12 @@ func TestTransportPromotedSettersPreserveResults(t *testing.T) {
 	if raw.reads != 1 || raw.all != 1 {
 		t.Fatal("underlying calls changed")
 	}
-	if n, e := c.Write([]byte{1}); n != 1 || e != nil {
-		t.Fatal("ignored write setter policy corrected silently")
+	if n, e := c.Write([]byte{1}); n != 0 || e != io.EOF || raw.writes != 0 {
+		t.Fatal("write admitted after promoted setter failure")
 	}
 	seq, w, s, cl := state(c)
 	if seq != 1 || w || !s || cl {
 		t.Fatal("first setter cardinality", seq)
 	}
-	t.Log("REACHED promoted setters return exact errors; Write still ignores setter error")
+	t.Log("REACHED promoted setters return exact errors; Write rejects setter failure")
 }

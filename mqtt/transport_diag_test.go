@@ -90,20 +90,20 @@ func TestTransportCloseBeforeError(t *testing.T) {
 	}
 	t.Log("REACHED close-before-error")
 }
-func TestTransportSetterIgnoredUnchanged(t *testing.T) {
+func TestTransportSetterFailurePreventsWrite(t *testing.T) {
 	enableDiag(t)
 	sentinel := errors.New("setter")
 	raw := &diagTestConn{seterr: sentinel}
 	c := &packetConn{Conn: raw}
 	n, err := c.Write([]byte{0xc0, 0})
-	if n != 2 || err != nil || raw.writes != 1 || raw.closes != 0 {
-		t.Fatal("speculative setter fix")
+	if n != 0 || err != sentinel || raw.writes != 0 || raw.closes != 0 {
+		t.Fatal("write admitted after setter failure")
 	}
 	seq, w, s, cl := state(c)
 	if seq != 1 || w || !s || cl {
 		t.Fatal(seq)
 	}
-	t.Log("REACHED ignored-setter-still-writes")
+	t.Log("REACHED failed-setter-prevents-write")
 }
 func TestTransportPublicationSetterClose(t *testing.T) {
 	enableDiag(t)
