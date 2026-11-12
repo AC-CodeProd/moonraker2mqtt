@@ -17,4 +17,4 @@ func (*WebSocketClient) requestReusable(context.Context, string, any, time.Durat
 	panic("unreachable")
 }
 
-func (*WebSocketClient) initLifecycle() {}
+func (*platformLifecycle) initLifecycle() {}

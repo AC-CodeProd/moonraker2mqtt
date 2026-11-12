@@ -6,14 +6,14 @@ import "fmt"
 
 type statusPublicationCache struct{}
 
-func (a *App) statusObjects() map[string]any {
+func (*statusPublicationCache) statusObjects(a *App) map[string]any {
 	objects, err := a.freshStatusObjects()
 	a.warnStatusSelection(err)
 	return objects
 }
-func (a *App) klippyStatusTopic() string {
+func (*statusPublicationCache) klippyStatusTopic(a *App) string {
 	return fmt.Sprintf("%s/klipper/state", a.config.MQTT.TopicPrefix)
 }
-func (a *App) objectStatusTopic(name string) string {
+func (*statusPublicationCache) objectStatusTopic(a *App, name string) string {
 	return fmt.Sprintf("%s/objects/%s", a.config.MQTT.TopicPrefix, name)
 }

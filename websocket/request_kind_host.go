@@ -4,4 +4,4 @@ package websocket
 
 type requestDecodeKind struct{}
 
-func (*WebSocketRequest) setKlippyState(bool) {}
+func (*requestDecodeKind) setKlippyState(bool) {}

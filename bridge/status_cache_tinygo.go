@@ -15,8 +15,7 @@ type statusPublicationCache struct {
 	topics       map[string]string
 }
 
-func (a *App) prepareStatusCache() {
-	c := &a.statusCache
+func (c *statusPublicationCache) prepareStatusCache(a *App) {
 	if c.prepared {
 		return
 	}
@@ -31,17 +30,20 @@ func (a *App) prepareStatusCache() {
 	c.topics["status"] = c.objectPrefix + "status"
 	c.prepared = true
 }
-func (a *App) statusObjects() map[string]any {
-	a.prepareStatusCache()
-	a.warnStatusSelection(a.statusCache.selectionErr)
-	return a.statusCache.objects
+func (c *statusPublicationCache) statusObjects(a *App) map[string]any {
+	c.prepareStatusCache(a)
+	a.warnStatusSelection(c.selectionErr)
+	return c.objects
 }
-func (a *App) klippyStatusTopic() string { a.prepareStatusCache(); return a.statusCache.klippyTopic }
-func (a *App) objectStatusTopic(name string) string {
-	a.prepareStatusCache()
-	if topic, ok := a.statusCache.topics[name]; ok {
+func (c *statusPublicationCache) klippyStatusTopic(a *App) string {
+	c.prepareStatusCache(a)
+	return c.klippyTopic
+}
+func (c *statusPublicationCache) objectStatusTopic(a *App, name string) string {
+	c.prepareStatusCache(a)
+	if topic, ok := c.topics[name]; ok {
 		return topic
 	}
 	// Preserve unexpected outer keys without an unbounded response-driven cache.
-	return a.statusCache.objectPrefix + name
+	return c.objectPrefix + name
 }

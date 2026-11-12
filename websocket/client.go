@@ -48,7 +48,7 @@ func NewWebSocketClient(config *config.MoonrakerConfig, listener StatusListener,
 		retry:        NewRetry(config.AutoReconnect, config.MaxReconnectAttempts, logger),
 		logger:       logger,
 	}
-	c.initLifecycle()
+	c.lifecycle.initLifecycle()
 	return c
 }
 

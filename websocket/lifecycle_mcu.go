@@ -345,7 +345,7 @@ func (l *platformLifecycle) retireNative() {
 		l.nativeErr = l.native.Retire()
 	}
 }
-func (c *WebSocketClient) initLifecycle() {
-	c.lifecycle.buffers.Init()
-	c.lifecycle.native, c.lifecycle.nativeErr = newNativeDialOwner()
+func (l *platformLifecycle) initLifecycle() {
+	l.buffers.Init()
+	l.native, l.nativeErr = newNativeDialOwner()
 }
