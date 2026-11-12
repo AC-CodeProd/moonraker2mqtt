@@ -5,6 +5,7 @@ package websocket
 import (
 	"bufio"
 	"context"
+	"errors"
 	"io"
 	wire "moonraker2mqtt/websocket/wire/lowmem"
 	"net"
@@ -16,6 +17,58 @@ import (
 	"testing"
 	"time"
 )
+
+func disconnectBufioFixture(t *testing.T, c *WebSocketClient) {
+	t.Helper()
+	if err := c.Disconnect(); err != nil {
+		t.Errorf("disconnect bufio fixture: %v", err)
+	}
+}
+
+func isBufioPeerShutdown(err error) bool {
+	return errors.Is(err, io.EOF) || errors.Is(err, io.ErrClosedPipe) || errors.Is(err, net.ErrClosed) || isBufioPeerErrno(err)
+}
+
+func TestBufioPeerShutdownClassification(t *testing.T) {
+	for _, tc := range []struct {
+		err  error
+		want bool
+	}{
+		{nil, false}, {io.EOF, true}, {io.ErrClosedPipe, true}, {net.ErrClosed, true},
+		{context.DeadlineExceeded, false}, {io.ErrUnexpectedEOF, false}, {io.ErrShortWrite, false},
+		{errors.New("unexpected fixture close failure"), false},
+	} {
+		if got := isBufioPeerShutdown(tc.err); got != tc.want {
+			t.Fatalf("shutdown(%v)=%t want %t", tc.err, got, tc.want)
+		}
+	}
+}
+
+func closeBufioPeer(t *testing.T, p *wire.Conn) {
+	t.Helper()
+	if err := p.Close(); err != nil && !isBufioPeerShutdown(err) {
+		t.Errorf("close bufio peer: %v", err)
+	}
+}
+
+func bufioFixtureServer(t *testing.T, h http.Handler) *httptest.Server {
+	t.Helper()
+	var handlers sync.WaitGroup
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		handlers.Add(1)
+		defer handlers.Done()
+		h.ServeHTTP(w, r)
+	}))
+	t.Cleanup(func() {
+		// Callers disconnect their clients first; HTTP Close alone does not join
+		// hijacked WebSocket handlers. Register each join before hijacking.
+		server.Close()
+		joined := make(chan struct{})
+		go func() { handlers.Wait(); close(joined) }()
+		awaitBarrier(t, joined)
+	})
+	return server
+}
 
 type joinedIO struct {
 	net.Conn
@@ -92,11 +145,20 @@ func TestBufioRealBlockedReadWriteJoinedBeforeResetDial(t *testing.T) {
 	next := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { nextDial.Add(1); w.WriteHeader(403) }))
 	defer next.Close()
 	c := recoveryClient(t, next.URL)
-	defer c.Disconnect()
+	defer disconnectBufioFixture(t, c)
 	a, b := net.Pipe()
-	defer b.Close()
+	defer func() {
+		if err := b.Close(); err != nil {
+			t.Errorf("close bufio pipe: %v", err)
+		}
+	}()
 	raw := &joinedIO{Conn: a, readEntered: make(chan struct{}), writeEntered: make(chan struct{}), readRelease: make(chan struct{}), writeRelease: make(chan struct{}), closed: make(chan struct{})}
+	var readReleased, writeReleased sync.Once
+	releaseRead := func() { readReleased.Do(func() { close(raw.readRelease) }) }
+	releaseWrite := func() { writeReleased.Do(func() { close(raw.writeRelease) }) }
+	defer func() { releaseRead(); releaseWrite() }()
 	serverDone := make(chan struct{})
+	t.Cleanup(func() { awaitBarrier(t, serverDone) })
 	go func() {
 		defer close(serverDone)
 		req, e := http.ReadRequest(bufio.NewReader(b))
@@ -126,7 +188,9 @@ func TestBufioRealBlockedReadWriteJoinedBeforeResetDial(t *testing.T) {
 	awaitBarrier(t, raw.writeEntered)
 	c.stopGeneration(g)
 	done := make(chan error, 1)
-	go func() { done <- c.Connect(context.Background()) }()
+	connectFinished := make(chan struct{})
+	go func() { defer close(connectFinished); done <- c.Connect(context.Background()) }()
+	t.Cleanup(func() { awaitBarrier(t, connectFinished) })
 	waitLifecycleHeld(c)
 	if nextDial.Load() != 0 {
 		t.Fatal("dial while both old operations live")
@@ -134,7 +198,7 @@ func TestBufioRealBlockedReadWriteJoinedBeforeResetDial(t *testing.T) {
 	if owned.calls.Load() != 0 {
 		t.Fatal("native retirement before old I/O joins")
 	}
-	close(raw.readRelease)
+	releaseRead()
 	awaitBarrier(t, g.readDone)
 	if nextDial.Load() != 0 {
 		t.Fatal("dial before old writer join")
@@ -142,7 +206,7 @@ func TestBufioRealBlockedReadWriteJoinedBeforeResetDial(t *testing.T) {
 	if owned.calls.Load() != 0 {
 		t.Fatal("native retirement before old writer join")
 	}
-	close(raw.writeRelease)
+	releaseWrite()
 	awaitBarrier(t, g.writeDone)
 	if e = <-done; e == nil {
 		t.Fatal("403 accepted")
@@ -168,8 +232,8 @@ func (p *pipeHijacker) Hijack() (net.Conn, *bufio.ReadWriter, error) { return p.
 
 func TestBufioCanceledContextAndConcurrentConnectIsolation(t *testing.T) {
 	peers := make(chan *wire.Conn, 2)
-	server := httptest.NewServer(wire.Handler(func(p *wire.Conn) {
-		defer p.Close()
+	server := bufioFixtureServer(t, wire.Handler(func(p *wire.Conn) {
+		defer closeBufioPeer(t, p)
 		peers <- p
 		for {
 			var m WebSocketMessage
@@ -181,7 +245,7 @@ func TestBufioCanceledContextAndConcurrentConnectIsolation(t *testing.T) {
 	}))
 	defer server.Close()
 	c := recoveryClient(t, server.URL)
-	defer c.Disconnect()
+	defer disconnectBufioFixture(t, c)
 	before, cancelBefore := context.WithCancel(context.Background())
 	cancelBefore()
 	if e := c.Connect(before); e != context.Canceled {

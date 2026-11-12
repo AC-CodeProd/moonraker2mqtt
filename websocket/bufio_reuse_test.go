@@ -11,6 +11,7 @@ import (
 	"reflect"
 	"runtime"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 )
@@ -62,8 +63,13 @@ func TestBufioActualLifecycleBackingOnceSuccessFailureGC(t *testing.T) {
 	defer func() { runtime.MemProfileRate = oldRate }()
 	var fail atomic.Bool
 	peers := make(chan *wire.Conn, 1)
-	h := wire.Handler(func(p *wire.Conn) { defer p.Close(); peers <- p; var m string; _ = wire.Message.Receive(p, &m) })
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	h := wire.Handler(func(p *wire.Conn) {
+		defer closeBufioPeer(t, p)
+		peers <- p
+		var m string
+		_ = wire.Message.Receive(p, &m)
+	})
+	server := bufioFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if fail.Load() {
 			w.WriteHeader(403)
 			return
@@ -73,7 +79,7 @@ func TestBufioActualLifecycleBackingOnceSuccessFailureGC(t *testing.T) {
 	defer server.Close()
 	before := bufioBackingProfile()
 	c := recoveryClient(t, server.URL)
-	defer c.Disconnect()
+	defer disconnectBufioFixture(t, c)
 	var retained []any
 	var first [5]uintptr
 	stable := true
@@ -126,14 +132,20 @@ func TestBufioLifecycleBothJoinsBeforeNextDial(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { calls.Add(1); w.WriteHeader(403) }))
 	defer server.Close()
 	c := recoveryClient(t, server.URL)
-	defer c.Disconnect()
+	defer disconnectBufioFixture(t, c)
 	g := &connectionGeneration{stop: make(chan struct{}), readDone: make(chan struct{}), writeDone: make(chan struct{})}
+	var readJoined, writeJoined sync.Once
+	joinRead := func() { readJoined.Do(func() { close(g.readDone) }) }
+	joinWrite := func() { writeJoined.Do(func() { close(g.writeDone) }) }
+	defer func() { joinRead(); joinWrite() }()
 	// Already stopped transport; emulate old I/O tasks not yet returned.
 	g.once.Do(func() { close(g.stop) })
 	c.lifecycle.generation = g
 	entered := make(chan struct{})
 	done := make(chan error, 1)
-	go func() { close(entered); done <- c.Connect(context.Background()) }()
+	connectFinished := make(chan struct{})
+	go func() { defer close(connectFinished); close(entered); done <- c.Connect(context.Background()) }()
+	t.Cleanup(func() { awaitBarrier(t, connectFinished) })
 	<-entered
 	// Use the held lifecycle lock itself as deterministic entry acknowledgement.
 	for c.lifecycle.mu.TryLock() {
@@ -143,12 +155,12 @@ func TestBufioLifecycleBothJoinsBeforeNextDial(t *testing.T) {
 	if calls.Load() != 0 {
 		t.Fatal("dial before read join")
 	}
-	close(g.readDone)
+	joinRead()
 	runtime.Gosched()
 	if calls.Load() != 0 {
 		t.Fatal("dial before write join")
 	}
-	close(g.writeDone)
+	joinWrite()
 	if e := <-done; e == nil {
 		t.Fatal("403 accepted")
 	}
