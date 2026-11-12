@@ -188,7 +188,7 @@ ready
 
 ## 🎮 Commandes MQTT
 
-Le bridge supporte l'envoi de commandes à l'imprimante via MQTT. Consultez le fichier [MQTT_COMMANDS.md](MQTT_COMMANDS.md) pour la documentation complète.
+Les commandes MQTT utilisent des payloads JSON sur `<topic_prefix>/commands` et nécessitent `mqtt.commands_enabled: true`. Les exemples ci-dessous peuvent modifier l’état de l’imprimante ; ne les utiliser que si l’action est souhaitée.
 
 ### Exemples rapides
 
@@ -344,6 +344,28 @@ go test -v -race -coverprofile=coverage.out ./...
 go tool cover -html=coverage.out
 ```
 
+### Vérifications locales
+
+Utiliser **golangci-lint v2.4.0** avec le fichier `.golangci.yml` du dépôt.
+Vérifier séparément le profil hôte et les adaptateurs MCU exécutés sur l’hôte :
+
+```sh
+go test -count=1 ./...
+go vet ./...
+GOFLAGS=-buildvcs=false golangci-lint run ./...
+
+go test -count=1 -tags=natiu,lowmem,native_storage_fixture ./...
+go vet -tags=natiu,lowmem,native_storage_fixture ./...
+GOFLAGS=-buildvcs=false golangci-lint run ./... --build-tags=natiu,lowmem,native_storage_fixture
+```
+
+Le workflow lint réutilisable contrôle les deux profils et conditionne
+l’automatisation des PR et les compilations de release hôte. Les tags
+d’adaptateurs sélectionnent des tests Go sur l’hôte, **pas une exécution ESP32-S3
+ni une compilation TinyGo**. Exécuter `-race` sur un hôte compatible : un échec
+de démarrage tel que `unsupported VMA range` ne valide pas le détecteur de
+courses. Des résultats locaux ne prouvent pas l’état CI d’une révision non poussée.
+
 ### Structure du projet
 
 ```text
@@ -389,7 +411,7 @@ GOOS=darwin GOARCH=arm64 go build -o moonraker2mqtt-darwin-arm64 ./cmd/moonraker
 
 - Waveshare ESP32-S3-Zero (ESP32-S3FH4R2), câble USB-C de données et réseau Wi-Fi 2,4 GHz de confiance.
 - Moonraker et un broker MQTT privé accessibles depuis la carte ; utiliser leurs adresses réseau, pas `localhost`.
-- Go 1.24.4+ et Make ; Docker avec l’image Linux/arm64 TinyGo 0.44.0 figée et un cache de modules déjà disponible (compilation hors ligne).
+- Go 1.24.4+, Make et Python 3 ; Docker capable d’exécuter l’image Linux/arm64 TinyGo 0.44.0 figée et un cache de modules déjà disponible (compilation hors ligne).
 - Le firmware se compile séparément et n’est pas inclus dans les releases GitHub de l’application hôte.
 
 ### Compilation et configuration
@@ -397,8 +419,8 @@ GOOS=darwin GOARCH=arm64 go build -o moonraker2mqtt-darwin-arm64 ./cmd/moonraker
 L’application Linux/Windows/macOS garde sa configuration, ses flags, Paho,
 les logs, topics et commandes existants. Le firmware S3 ajoute une page de
 configuration française hors ligne et un stockage à deux slots. **Tests hôte
-et compilation validés ; nouveau parcours portail/sauvegarde/redémarrage non
-encore validé sur la carte.**
+et compilation validés ; parcours portail/sauvegarde/redémarrage de cette version
+standard non qualifié sur la carte.**
 
 ```sh
 make test vet build
@@ -540,17 +562,22 @@ MQTT TCP et `ws://` sans TLS ; QoS0 ; 4 abonnements exacts, payload MQTT 4096
 octets, topics 256 octets, 4 commandes en file, 4 messages WebSocket en file,
 8 requêtes JSON-RPC simultanées et trames WebSocket de 16Kio. Pas d’OTA, de
 DNS captif automatique ni de qualification watchdog. L’initialisation Wi-Fi
-n’est tentée qu’une fois par démarrage ; les échecs association/DHCP sont retentés
-avec attente de 5–30 secondes, puis portail de secours après six échecs sans
-effacer les paramètres. Deux emplacements TCP simultanés sont réservés à MQTT
-et Moonraker ; la pompe réseau est jointe avant remplacement d’une pile ayant
-échoué avant le bridge. Une perte d’association annule le bridge puis provoque
-un redémarrage logiciel, au lieu de réutiliser les descripteurs alors que des
-workers WebSocket peuvent subsister. Ce reset annule le RTC en attente et
-préserve les paramètres durables. Tests de régression, deux sockets lneto réels
-en mémoire et compilation avec le pilote épinglé passent ; reprise sur carte,
-mémoire dynamique et tests prolongés restent non qualifiés. Aucun broker ni
-imprimante de production contacté. Secrets en clair dans les artefacts et la
+n’est tentée qu’une fois par démarrage. **Avec des paramètres persistants valides,
+un échec initial suit le redémarrage contrôlé décrit plus haut**, et non un
+retour au portail après six essais. Avec uniquement une configuration de repli
+`-X` valide, les échecs association/DHCP peuvent être retentés avec une attente
+de 5–30 secondes, puis portail de secours après six échecs ; une erreur
+d’initialisation radio ou d’arrêt non sûr exige un reset. Aucun de ces chemins
+n’efface les paramètres durables. Deux emplacements TCP simultanés sont réservés
+à MQTT et Moonraker ; la pompe réseau est jointe avant remplacement d’une pile
+ayant échoué avant le bridge. Une perte d’association annule la session puis
+provoque un redémarrage logiciel, qui invalide le RTC en attente et préserve les
+paramètres durables. Les interruptions ordinaires des services MQTT/Moonraker
+utilisent leurs chemins de reprise réutilisables dans le même boot, pas cette
+politique de reset Wi-Fi. Tests de régression, deux sockets lneto réels en mémoire
+et compilation avec le pilote épinglé passent ; reprise sur carte, mémoire
+dynamique et tests prolongés restent non qualifiés. Aucun broker ni imprimante
+de production contacté. Secrets en clair dans les artefacts et la
 flash : garder les binaires privés et utiliser un LAN de confiance. Les limites
 Linux ne changent pas.
 
@@ -602,7 +629,7 @@ iotop
 
 ## 📄 License
 
-Ce projet est sous licence GPL-3.0. Voir le fichier [LICENSE](LICENSE) pour plus de détails.
+Ce projet est sous licence GPL-3.0. Voir le fichier [LICENSE.txt](LICENSE.txt) pour plus de détails.
 
 ## 🤝 Support
 

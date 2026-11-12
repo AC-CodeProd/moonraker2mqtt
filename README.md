@@ -190,7 +190,7 @@ ready
 
 ## 🎮 MQTT Commands
 
-The bridge supports sending commands to the printer via MQTT. See the [MQTT_COMMANDS.md](MQTT_COMMANDS.md) file for complete documentation.
+MQTT commands use JSON payloads on `<topic_prefix>/commands` and require `mqtt.commands_enabled: true`. The examples below can change the printer state; use them only when that action is intended.
 
 ### Quick examples
 
@@ -346,6 +346,27 @@ go test -v -race -coverprofile=coverage.out ./...
 go tool cover -html=coverage.out
 ```
 
+### Local quality checks
+
+Use **golangci-lint v2.4.0** with the committed `.golangci.yml`. Check the host
+and hosted MCU adapters separately:
+
+```sh
+go test -count=1 ./...
+go vet ./...
+GOFLAGS=-buildvcs=false golangci-lint run ./...
+
+go test -count=1 -tags=natiu,lowmem,native_storage_fixture ./...
+go vet -tags=natiu,lowmem,native_storage_fixture ./...
+GOFLAGS=-buildvcs=false golangci-lint run ./... --build-tags=natiu,lowmem,native_storage_fixture
+```
+
+The reusable CI lint workflow checks both profiles and gates PR automation and
+hosted release builds. Adapter tags select Go-hosted tests, **not an ESP32-S3
+execution or a TinyGo build**. Run `-race` on a compatible host; a runtime startup
+failure such as `unsupported VMA range` does not validate the race detector.
+Local results do not establish the CI status of an unpushed revision.
+
 ### Project structure
 
 ```text
@@ -391,7 +412,7 @@ GOOS=darwin GOARCH=arm64 go build -o moonraker2mqtt-darwin-arm64 ./cmd/moonraker
 
 - Waveshare ESP32-S3-Zero (ESP32-S3FH4R2), a USB-C data cable and a trusted 2.4 GHz Wi-Fi network.
 - Moonraker and a private MQTT broker reachable from the board; use their network addresses, not `localhost`.
-- Go 1.24.4+ and Make; Docker with the pinned Linux/arm64 TinyGo 0.44.0 image and an existing module cache (offline build).
+- Go 1.24.4+, Make and Python 3; Docker able to run the pinned Linux/arm64 TinyGo 0.44.0 image and an existing module cache (offline build).
 - The firmware is built separately and is not included in the hosted GitHub release assets.
 
 ### Build and configuration
@@ -399,7 +420,7 @@ GOOS=darwin GOARCH=arm64 go build -o moonraker2mqtt-darwin-arm64 ./cmd/moonraker
 The Linux/Windows/macOS configuration, flags, Paho adapter, logs, topics and
 commands are unchanged. The experimental S3 firmware now includes an offline
 French setup page and a two-slot settings store; **host tests and compilation
-pass, but the new portal/save/reboot path has not yet been tested on-device**.
+pass, but the portal/save/reboot path in this stock build has not been qualified on-device**.
 
 ```sh
 make test vet build
@@ -531,16 +552,20 @@ Plain TCP MQTT and `ws://` only; QoS0; at most 4 exact-topic subscriptions,
 4096-byte MQTT payloads, 256-byte topics, 4 queued incoming commands, 4 queued
 WebSocket messages, 8 pending JSON-RPC requests and 16KiB incoming WebSocket
 frames. No TLS, OTA, automatic captive discovery or watchdog qualification.
-Wi-Fi initialization is attempted once per boot; association/DHCP failures are
-retried with 5–30 second backoff and recovery setup after six failures, without
-erasing settings. The local adapter reserves two simultaneous TCP slots for MQTT
-and Moonraker and joins the packet pump before replacing a failed pre-bridge
-stack. Association loss cancels the bridge; recovery uses a software reset rather
-than reusing a descriptor table while WebSocket workers may still exist. This
-reset cancels pending RTC data and preserves durable settings. These paths and
-two real in-memory lneto sockets are regression-tested and the adapter compiles
-with the pinned driver; on-device recovery and long-running memory behavior
-remain unqualified. No production printer or broker was contacted by tests.
+Wi-Fi initialization is attempted once per boot. **With valid saved settings,
+a startup failure follows the controlled-reboot path described above**, not a
+six-attempt fallback to setup. With only valid link-time fallback settings,
+association/DHCP failures can be retried with 5–30 second backoff before recovery
+setup after six failures; radio initialization or unsafe shutdown failures
+require reset instead. Neither path erases durable settings. The local adapter
+reserves two simultaneous TCP slots for MQTT and Moonraker and joins the packet
+pump before replacing a failed pre-bridge stack. Association loss cancels the
+bridge session and leads to a software reset, invalidating pending RTC data
+while preserving durable settings. Ordinary MQTT/Moonraker service interruptions
+use their reusable same-boot recovery paths, not this Wi-Fi reset policy. These
+paths and two real in-memory lneto sockets are regression-tested and the adapter
+compiles with the pinned driver; on-device recovery and long-running memory
+behavior remain unqualified. No production printer or broker was contacted by tests.
 Firmware and stored records contain plaintext secrets; keep build artifacts
 private and use a trusted LAN/broker. Linux limits remain unchanged.
 
@@ -592,7 +617,7 @@ iotop
 
 ## 📄 License
 
-This project is licensed under GPL-3.0. See the [LICENSE](LICENSE) file for more details.
+This project is licensed under GPL-3.0. See the [LICENSE.txt](LICENSE.txt) file for more details.
 
 ## 🤝 Support
 
