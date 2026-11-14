@@ -97,6 +97,45 @@ func (c *packetConn) beginReceive() error {
 }
 
 func (c *packetConn) Read(p []byte) (int, error) {
+	if len(p) == 0 {
+		return c.readSome(p)
+	}
+	// The official decoder's readFull fallback mishandles a legal short read.
+	// Complete its requested field without retaining a packet or crossing the
+	// current body. Header requests remain single-byte, as DecodeHeader expects.
+	if c.frame.state == 5 && uint64(len(p)) > uint64(c.frame.remaining) {
+		c.frame.rejected = true
+		return 0, native.ErrBadRemainingLen
+	}
+	p = c.frame.limit(p)
+	n, empty := 0, 0
+	for n < len(p) {
+		got, err := c.readSome(p[n:])
+		n += got
+		if err != nil {
+			if errors.Is(err, io.EOF) && n == len(p) {
+				return n, nil
+			}
+			if errors.Is(err, io.EOF) && n > 0 {
+				err = io.ErrUnexpectedEOF
+			}
+			return n, err
+		}
+		if got == 0 {
+			empty++
+			if empty == 100 {
+				return n, io.ErrNoProgress
+			}
+		} else {
+			empty = 0
+		}
+	}
+	return n, nil
+}
+
+// readSome owns each physical transport call so progress refreshes the existing
+// deadline while the absolute packet cap remains anchored to the first byte.
+func (c *packetConn) readSome(p []byte) (int, error) {
 	if !c.receive || len(p) == 0 {
 		return c.readFrame(p)
 	}

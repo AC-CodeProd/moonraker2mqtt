@@ -126,7 +126,7 @@ func TestSubackBoundPreservesBytesAndFramePosition(t *testing.T) {
 		raw := &subackBoundConn{maxRead: maxRead}
 		raw.input.Reset(stream)
 		wire := &packetConn{Conn: raw}
-		got, err := io.ReadAll(wire)
+		got, err := subackWireBytes(wire)
 		if err != nil || !bytes.Equal(got, stream) {
 			t.Fatalf("maxRead=%d bytes changed: %x err=%v", maxRead, got, err)
 		}
@@ -135,7 +135,7 @@ func TestSubackBoundPreservesBytesAndFramePosition(t *testing.T) {
 	raw := &subackBoundConn{}
 	raw.input.Reset([]byte{0xd0, 0, 0x90, 4, 0, 1, 0, 0})
 	wire := &packetConn{Conn: raw}
-	got, err := io.ReadAll(wire)
+	got, err := subackWireBytes(wire)
 	if err == nil || raw.readBytes != 4 || !bytes.Equal(got, []byte{0xd0, 0, 0x90, 4}) {
 		t.Fatalf("subsequent invalid frame consumed: %x err=%v reads=%d", got, err, raw.readBytes)
 	}
@@ -185,9 +185,26 @@ func TestSubackBoundMalformedLengthStopsAtFourBytes(t *testing.T) {
 	raw := &subackBoundConn{}
 	raw.input.Reset([]byte{0x90, 0x80, 0x80, 0x80, 0x80, 3, 0, 1, 0})
 	wire := &packetConn{Conn: raw}
-	_, err := io.ReadAll(wire)
+	_, err := subackWireBytes(wire)
 	if err == nil || raw.readBytes != 5 {
 		t.Fatalf("malformed RemainingLength read=%d err=%v", raw.readBytes, err)
+	}
+}
+
+// Observe unchanged wire bytes without requesting a field beyond its packet.
+// Large io.ReadAll requests are not the official decoder's field-sized reads.
+func subackWireBytes(wire *packetConn) ([]byte, error) {
+	var out []byte
+	var b [1]byte
+	for {
+		n, err := wire.Read(b[:])
+		out = append(out, b[:n]...)
+		if err == io.EOF {
+			return out, nil
+		}
+		if err != nil {
+			return out, err
+		}
 	}
 }
 
@@ -200,7 +217,7 @@ func TestSubackBoundOriginalBytesReachAdapterSnapshot(t *testing.T) {
 	if err := wire.beginReceive(); err != nil {
 		t.Fatal(err)
 	}
-	got, err := io.ReadAll(wire)
+	got, err := subackWireBytes(wire)
 	if err != nil || !bytes.Equal(got, frame) {
 		t.Fatal("wire bytes changed", err)
 	}
