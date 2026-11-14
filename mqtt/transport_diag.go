@@ -90,14 +90,18 @@ func (c *packetConn) closeCause(site uint8) error {
 	c.stopMu.Lock()
 	c.closed = true
 	c.stopMu.Unlock()
-	// Owned-generation interruption does not acquire the wire write mutex.
-	// Close may otherwise wait behind a native Send holding the write lock.
-	if c.interrupt != nil {
+	// Only the explicit bounded-drain capability opts normal native Close in.
+	// Legacy transports and all cancellation/error sites keep interruption.
+	closeTransport := c.Conn.Close
+	graceful, qualified := c.Conn.(interface{ CloseGracefully() error })
+	if site == 7 && qualified {
+		closeTransport = graceful.CloseGracefully
+	} else if c.interrupt != nil {
 		_ = c.interrupt()
 	}
 
 	if TransportDiagnostics != "true" {
-		return c.Conn.Close()
+		return closeTransport()
 	}
 	c.diag.mu.Lock()
 	first := !c.diag.closeSeen
@@ -107,7 +111,7 @@ func (c *packetConn) closeCause(site uint8) error {
 		println("TMC3:", uintptr(unsafe.Pointer(c)), c.diag.seq, site, 1, 0, transportNow())
 	}
 	c.diag.mu.Unlock()
-	err := c.Conn.Close()
+	err := closeTransport()
 	returned := transportNow()
 	if first {
 		c.diag.mu.Lock()

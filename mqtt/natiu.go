@@ -472,11 +472,20 @@ func (c *NatiuClient) Disconnect() error {
 	l.closed = true
 	client, wire := c.snapshot()
 	var result error
-	if client != nil && client.IsConnected() {
+	graceful := client != nil && client.IsConnected()
+	if graceful {
 		result = client.Disconnect(errShutdown)
 	}
 	if wire != nil {
-		_ = wire.closeCause(4)
+		closeErr := wire.closeCause(4)
+		// Upstream Disconnect discards transport Close errors. The first-party
+		// bounded native closer retains its result across repeated Close calls.
+		// Preserve a primary final-write error and legacy cleanup behavior.
+		// A previously interrupted generation has no new graceful-delivery
+		// promise here; its cached Close error belongs to that earlier failure.
+		if _, qualified := wire.Conn.(interface{ CloseGracefully() error }); qualified && graceful && result == nil {
+			result = closeErr
+		}
 	}
 	if err := c.retireMQTT(); err != nil && result == nil {
 		result = err

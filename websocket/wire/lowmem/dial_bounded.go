@@ -82,4 +82,9 @@ func (config *Config) dialBounded(ctx context.Context, timeout time.Duration, co
 
 // AbortTransport interrupts only this generation; it bypasses the WebSocket
 // close-frame write. Hosted lowmem fixtures retain ordinary native Close.
-func (ws *Conn) AbortTransport() error { return ws.rwc.Close() }
+func (ws *Conn) AbortTransport() error {
+	if generation, ok := ws.rwc.(interface{ AbortGeneration() error }); ok {
+		return generation.AbortGeneration()
+	}
+	return ws.rwc.Close()
+}

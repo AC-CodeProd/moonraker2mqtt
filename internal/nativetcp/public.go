@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net"
 	"net/netip"
+	"os"
 	"sync"
 	"time"
 
@@ -31,21 +32,26 @@ func (s *PublicStack) Pump(fn func()) { s.gate.Lock(); defer s.gate.Unlock(); fn
 // public registration compacts invalid nodes when needed. Retire waits for the
 // frame gate AND every admitted operation before another generation may dial.
 type PublicOwner struct {
-	stack      *PublicStack
-	serial     sync.Mutex
-	mu         sync.Mutex
-	calls      sync.WaitGroup
-	conn       tcp.Conn
-	tx         [4096]byte
-	rx         [1024]byte
-	generation uint64
-	active     bool
+	stack         *PublicStack
+	serial        sync.Mutex
+	mu            sync.Mutex
+	calls         sync.WaitGroup
+	conn          tcp.Conn
+	tx            [4096]byte
+	rx            [1024]byte
+	generation    uint64
+	active        bool
+	closing       bool
+	writers       int
+	writeDeadline time.Time
 }
 
 type publicConn struct {
 	owner         *PublicOwner
 	generation    uint64
 	local, remote net.Addr
+	closeOnce     sync.Once
+	closeErr      error
 }
 
 func (s *PublicStack) NewOwner() (*PublicOwner, error) {
@@ -114,6 +120,8 @@ func (o *PublicOwner) DialAddr(ctx context.Context, remote netip.AddrPort) (net.
 	}
 	o.mu.Lock()
 	o.active = true
+	o.closing = false
+	o.writeDeadline = time.Time{}
 	o.mu.Unlock()
 	return &publicConn{owner: o, generation: o.generation, local: net.TCPAddrFromAddrPort(netip.AddrPortFrom(netip.AddrFrom4(o.stack.Stack.Addr4()), local)), remote: net.TCPAddrFromAddrPort(remote)}, nil
 }
@@ -133,7 +141,7 @@ func (c *publicConn) enter() bool {
 	o := c.owner
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	if !o.active || c.generation != o.generation {
+	if !o.active || o.closing || c.generation != o.generation {
 		return false
 	}
 	o.calls.Add(1)
@@ -147,11 +155,17 @@ func (c *publicConn) Read(p []byte) (int, error) {
 	return c.owner.conn.Read(p)
 }
 func (c *publicConn) Write(p []byte) (int, error) {
-	if !c.enter() {
+	o := c.owner
+	o.mu.Lock()
+	if !o.active || o.closing || c.generation != o.generation {
+		o.mu.Unlock()
 		return 0, net.ErrClosed
 	}
-	defer c.owner.calls.Done()
-	return c.owner.conn.Write(p)
+	o.calls.Add(1)
+	o.writers++
+	o.mu.Unlock()
+	defer func() { o.mu.Lock(); o.writers--; o.mu.Unlock(); o.calls.Done() }()
+	return o.conn.Write(p)
 }
 func (c *publicConn) interrupt() error {
 	o := c.owner
@@ -171,27 +185,102 @@ func (c *publicConn) GenerationInterrupt() (func() error, error) {
 	c.owner.calls.Done()
 	return c.interrupt, nil
 }
-func (c *publicConn) Close() error         { return c.interrupt() }
+
+// CloseGracefully waits for TCP acknowledgement of all accepted output, not
+// application acknowledgement or a FIN handshake. It never calls native Close:
+// that method can wait unboundedly on the native write lock. Abort after the
+// barrier releases reads/storage; on failure it also wakes blocked writers.
+// Serial pins storage until all admitted calls return. GenerationInterrupt
+// bypasses serial and remains destructive during this wait.
+func (c *publicConn) CloseGracefully() error {
+	c.closeOnce.Do(func() { c.closeErr = c.closeGracefully() })
+	return c.closeErr
+}
+
+func (c *publicConn) closeGracefully() error {
+	o := c.owner
+	o.serial.Lock()
+	defer o.serial.Unlock()
+	o.mu.Lock()
+	if c.generation != o.generation {
+		o.mu.Unlock()
+		return nil
+	}
+	if !o.active {
+		o.mu.Unlock()
+		return net.ErrClosed
+	}
+	o.closing = true
+	deadline := time.Now().Add(2 * time.Second)
+	if !o.writeDeadline.IsZero() && o.writeDeadline.Before(deadline) {
+		deadline = o.writeDeadline
+	}
+	// Setters execute under mu: no admitted setter can later remove this cap.
+	// Neither this setter nor Abort acquires native writeLock.
+	err := o.conn.SetWriteDeadline(deadline)
+	o.mu.Unlock()
+	for err == nil {
+		o.mu.Lock()
+		o.stack.gate.Lock()
+		// Closure precedes emptiness: Abort/RST also empties output.
+		if !o.active || o.conn.State().IsClosed() {
+			err = net.ErrClosed
+		} else if !time.Now().Before(deadline) {
+			err = os.ErrDeadlineExceeded
+		} else if o.writers == 0 && o.conn.FreeOutput() == len(o.tx) {
+			o.stack.gate.Unlock()
+			o.mu.Unlock()
+			break
+		}
+		o.stack.gate.Unlock()
+		o.mu.Unlock()
+		if err == nil {
+			time.Sleep(5 * time.Millisecond)
+		}
+	}
+	o.mu.Lock()
+	o.active = false
+	o.abort()
+	o.mu.Unlock()
+	o.calls.Wait()
+	return err
+}
+
+func (c *publicConn) Close() error         { return c.CloseGracefully() }
 func (c *publicConn) LocalAddr() net.Addr  { return c.local }
 func (c *publicConn) RemoteAddr() net.Addr { return c.remote }
 func (c *publicConn) SetDeadline(t time.Time) error {
-	if !c.enter() {
+	o := c.owner
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if !o.active || o.closing || c.generation != o.generation {
 		return net.ErrClosed
 	}
-	defer c.owner.calls.Done()
-	return c.owner.conn.SetDeadline(t)
+	err := o.conn.SetDeadline(t)
+	if err == nil {
+		o.writeDeadline = t
+	}
+	return err
 }
 func (c *publicConn) SetReadDeadline(t time.Time) error {
-	if !c.enter() {
+	o := c.owner
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if !o.active || o.closing || c.generation != o.generation {
 		return net.ErrClosed
 	}
-	defer c.owner.calls.Done()
-	return c.owner.conn.SetReadDeadline(t)
+	return o.conn.SetReadDeadline(t)
 }
 func (c *publicConn) SetWriteDeadline(t time.Time) error {
-	if !c.enter() {
+	o := c.owner
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if !o.active || o.closing || c.generation != o.generation {
 		return net.ErrClosed
 	}
-	defer c.owner.calls.Done()
-	return c.owner.conn.SetWriteDeadline(t)
+	err := o.conn.SetWriteDeadline(t)
+	if err == nil {
+		o.writeDeadline = t
+	}
+	return err
 }

@@ -18,6 +18,7 @@ type publicFixture struct {
 	peers      [2]tcp.Conn
 	stop, done chan struct{}
 	paused     atomic.Bool
+	dropReturn atomic.Bool
 }
 
 func fixture(t *testing.T) *publicFixture {
@@ -48,12 +49,16 @@ func fixture(t *testing.T) *publicFixture {
 			}
 			if !f.paused.Load() {
 				var n int
-				f.a.Pump(func() { n, _ = f.a.Stack.EgressEthernet(buf[:]) })
+				f.a.Pump(func() {
+					if !f.paused.Load() {
+						n, _ = f.a.Stack.EgressEthernet(buf[:])
+					}
+				})
 				if n > 0 {
 					f.b.Pump(func() { _ = f.b.Stack.IngressEthernet(buf[:n]) })
 				}
 				f.b.Pump(func() { n, _ = f.b.Stack.EgressEthernet(buf[:]) })
-				if n > 0 {
+				if n > 0 && !f.dropReturn.Load() {
 					f.a.Pump(func() { _ = f.a.Stack.IngressEthernet(buf[:n]) })
 				}
 			}
