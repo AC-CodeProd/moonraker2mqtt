@@ -38,3 +38,34 @@ tmp/
 temp/
 build/
 builds/
+
+# Private material is excluded at every depth, even README.md files that match
+# the public documentation exception above. Git ignores do not protect contexts.
+**/docs/
+**/tools/
+**/third_party/
+**/logs/
+**/capture/
+**/captures/
+**/qualification/
+**/.env*
+
+# Local caches, build outputs and firmware/capture artifacts may contain secrets.
+**/.cache/
+**/__pycache__/
+**/tmp/
+**/temp/
+**/build/
+**/builds/
+**/firmware/
+**/*.pyc
+**/*.pyo
+**/*.elf
+**/*.bin
+**/*.uf2
+**/*.hex
+**/*.map
+**/*.dump
+**/*.core
+**/*.log
+**/*.out
