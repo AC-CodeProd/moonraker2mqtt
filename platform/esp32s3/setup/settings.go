@@ -62,6 +62,11 @@ func (s Settings) Validate() error {
 	if !clean(s.ClientID, 64) || s.ClientID == "" || !clean(s.TopicPrefix, 128) || s.TopicPrefix == "" || strings.ContainsAny(s.TopicPrefix, "+#") || s.PollSeconds < 1 || s.PollSeconds > 3600 {
 		return errors.New("invalid client, topic or polling interval")
 	}
+	// Validate the exact derived boot configuration before staging any save or
+	// repair. Keep public errors fixed: the shared validator may quote input.
+	if err := s.Config().Validate(); err != nil {
+		return errors.New("settings rejected by boot configuration")
+	}
 	return nil
 }
 func Decode(b []byte) (Settings, error) {
