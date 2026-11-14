@@ -4,7 +4,6 @@ package mqtt
 
 import (
 	"context"
-	"errors"
 	native "github.com/soypat/natiu-mqtt"
 	"net"
 	"sync"
@@ -51,6 +50,8 @@ func (c *NatiuClient) initMQTT() error {
 	l.decoder = make([]byte, MaxPayload+256)
 	c.queue = make(chan incoming, 4)
 	c.subacks = make(chan subscriptionAck, 1)
+	c.controls = make(chan clientControl, 1)
+	c.controlReplies = make(chan error, 1)
 	l.rxStart = make(chan *mqttGeneration)
 	l.dispatchStart = make(chan *mqttGeneration)
 	l.cancelStart = make(chan *mqttGeneration)
@@ -67,11 +68,9 @@ func (c *NatiuClient) initMQTT() error {
 func (c *NatiuClient) mqttRXWorker() {
 	defer close(c.lifecycle.rxExit)
 	for g := range c.lifecycle.rxStart {
-		c.readLoop(g.client, g.wire, c.queue, g.rxDone)
-		// Native Disconnect marks shutdown before its final wire write. Do not
-		// wake cancellation/Close until that caller has finished the packet.
-		// Terminal Disconnect retires and joins this generation immediately after.
-		if !errors.Is(g.client.Err(), errShutdown) {
+		// readLoop returns only after the owner's final native observation;
+		// rxDone therefore joins every native call, including shutdown Err.
+		if !c.readLoop(g.client, g.wire, c.queue, g.rxDone) {
 			g.stopNow()
 		}
 	}
@@ -128,6 +127,7 @@ func (c *NatiuClient) retireMQTT() error {
 	// ops across that join would create cross-protocol lock coupling.
 	c.mu.Lock()
 	c.client = nil
+	c.status = clientStatus{}
 	c.conn = nil
 	c.mu.Unlock()
 	c.ops.Unlock()
@@ -145,6 +145,7 @@ func (c *NatiuClient) retireMQTT() error {
 	}
 	c.mu.Lock()
 	c.client = nil
+	c.status = clientStatus{}
 	c.conn = nil
 	c.mu.Unlock()
 	for {
@@ -155,6 +156,7 @@ func (c *NatiuClient) retireMQTT() error {
 		}
 	}
 subacks:
+	c.drainControls()
 	for {
 		select {
 		case <-c.subacks:

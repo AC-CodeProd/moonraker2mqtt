@@ -64,12 +64,14 @@ func TestSameBootGracefulDisconnectDoesNotCloseBeforeFinalWrite(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("final write not reached")
 	}
+	// DISCONNECT now runs on the RX owner, after the idle read is woken.
+	// That owner must remain live until the gated final write has returned.
 	select {
 	case <-c.done:
-	case <-time.After(3 * time.Second):
-		t.Fatal("idle RX shutdown not reached")
+		t.Fatal("RX owner joined before its final write returned")
+	default:
 	}
-	// Let the durable RX worker run after readLoop's done closure.
+	// Neither RX cleanup nor cancellation may close the gated final packet.
 	select {
 	case <-wire.closed:
 		t.Error("RX worker cancellation closed transport before DISCONNECT Write returned")

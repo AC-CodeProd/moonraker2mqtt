@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -47,33 +48,40 @@ type incoming struct {
 // NatiuClient is the firmware's MQTT 3.1.1 QoS0 adapter. The natiu build
 // tag also enables local transport tests without importing the radio driver.
 type NatiuClient struct {
-	cfg          config.MQTTConfig
-	log          logger.Logger
-	ops          sync.Mutex
-	mu           sync.Mutex
-	client       *native.Client
-	conn         *packetConn
-	done         chan struct{}
-	handlers     map[string]MessageHandler
-	queue        chan incoming
-	subacks      chan subscriptionAck
-	packetID     uint16
-	dial         func(string, string) (net.Conn, error)
-	connectStage uint8 // Owned by ops, diagnostics only.
-	lifecycle    mqttLifecycle
+	cfg            config.MQTTConfig
+	log            logger.Logger
+	ops            sync.Mutex
+	mu             sync.Mutex
+	client         *native.Client
+	status         clientStatus
+	controls       chan clientControl
+	controlReplies chan error
+	conn           *packetConn
+	done           chan struct{}
+	handlers       map[string]MessageHandler
+	queue          chan incoming
+	subacks        chan subscriptionAck
+	packetID       uint16
+	dial           func(string, string) (net.Conn, error)
+	connectStage   uint8 // Owned by ops, diagnostics only.
+	lifecycle      mqttLifecycle
 }
 
 // packetConn serializes complete wire writes, including the standalone UNSUBSCRIBE.
 type packetConn struct {
 	net.Conn
-	mu          sync.Mutex
-	diag        transportDiagnostic
-	stopMu      sync.Mutex
-	closed      bool
-	interrupt   func() error
-	subRequests uint8 // protected by stopMu
-	subPending  bool
-	subID       uint16
+	mu              sync.Mutex
+	diag            transportDiagnostic
+	stopMu          sync.Mutex
+	closed          bool
+	controls        chan clientControl // bound before exclusive RX handoff
+	idleRead        bool               // stopMu: only the first physical header read
+	controlErr      error              // stopMu: failed wake revokes queued command
+	controlDeadline time.Time          // mu: cap native control writes
+	interrupt       func() error
+	subRequests     uint8 // protected by stopMu
+	subPending      bool
+	subID           uint16
 
 	txPrefix [7]byte // fixed header + topic length; owned by mu
 	// Receive state is owned only by the decoder goroutine. During CONNECT
@@ -150,6 +158,14 @@ func (c *packetConn) readSome(p []byte) (int, error) {
 	}
 	c.stopMu.Lock()
 	closed := c.closed
+	idle := c.packetDeadline.IsZero() && c.controls != nil
+	if !closed && idle {
+		if len(c.controls) > 0 {
+			c.stopMu.Unlock()
+			return 0, os.ErrDeadlineExceeded
+		}
+		c.idleRead = true
+	}
 	c.stopMu.Unlock()
 	if closed {
 		return 0, net.ErrClosed
@@ -157,6 +173,7 @@ func (c *packetConn) readSome(p []byte) (int, error) {
 	n, err := c.readFrame(p)
 	c.stopMu.Lock()
 	closed = c.closed
+	c.idleRead = false
 	c.stopMu.Unlock()
 	if closed && err != nil {
 		err = net.ErrClosed
@@ -193,6 +210,9 @@ func (c *packetConn) Write(p []byte) (int, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	deadline := time.Now().Add(10 * time.Second)
+	if !c.controlDeadline.IsZero() && c.controlDeadline.Before(deadline) {
+		deadline = c.controlDeadline
+	}
 	seterr := c.Conn.SetWriteDeadline(deadline)
 	if TransportDiagnostics == "true" && seterr != nil {
 		c.observeWrite(1, len(p), 0, time.Until(deadline).Nanoseconds(), seterr, true)
@@ -212,14 +232,19 @@ func NewNatiuClient(cfg config.MQTTConfig, log logger.Logger) *NatiuClient {
 		return net.DialTimeout(network, address, 10*time.Second)
 	}}
 }
+
+// snapshot exposes identity/transport only. Production callers must never use
+// this pointer to observe native state. Tests may read SubscribedTopics alone:
+// after exclusive Connect, activeSubs is only changed under natiu's cs.mu (the
+// unlocked error callbacks do not touch it). Other native getters require the
+// RX join barrier; live connection/error/ping tests use observedStatus instead.
 func (c *NatiuClient) snapshot() (*native.Client, *packetConn) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.client, c.conn
 }
 func (c *NatiuClient) IsConnected() bool {
-	client, _ := c.snapshot()
-	return client != nil && client.IsConnected()
+	return c.observedStatus().connected
 }
 
 // ConnectDiagnostics prints no error text, endpoints or configuration.
@@ -350,6 +375,8 @@ func (c *NatiuClient) ConnectContext(ctx context.Context) error {
 	c.client = client
 	c.conn = wire
 	c.done = g.rxDone
+	c.status = clientStatus{connected: true}
+	wire.controls = c.controls
 	c.mu.Unlock()
 	g.running = true
 	l.rxStart <- g
@@ -357,11 +384,21 @@ func (c *NatiuClient) ConnectContext(ctx context.Context) error {
 	c.connectStage = 3
 	return c.connectResult(nil)
 }
-func (c *NatiuClient) readLoop(client *native.Client, wire *packetConn, queue chan incoming, done chan struct{}) {
+func (c *NatiuClient) readLoop(client *native.Client, wire *packetConn, queue chan incoming, done chan struct{}) bool {
 	defer close(done)
 	defer func() {
-		// Native Disconnect marks the client disconnected before writing its
-		// packet. Let the caller finish that write before closing the wire.
+		c.mu.Lock()
+		if c.client == client {
+			c.status.connected = false
+			c.status.awaitingPing = false
+			c.status.err = client.Err()
+		}
+		c.mu.Unlock()
+	}()
+	defer func() {
+		// The RX owner completes Disconnect (including native final-packet
+		// Close/ACK drainage) before returning. Successful shutdown needs no
+		// receive-error cleanup interruption of that graceful close.
 		if !errors.Is(client.Err(), errShutdown) {
 			if err := wire.closeCause(3); err != nil {
 				c.log.Warn("MQTT receive cleanup close failed: %v", err)
@@ -373,11 +410,23 @@ func (c *NatiuClient) readLoop(client *native.Client, wire *packetConn, queue ch
 	var pingBytes, pingPackets uint32
 	var lastPacketType byte
 	for client.IsConnected() {
+		c.runControl(client, wire)
+		if !client.IsConnected() {
+			break
+		}
+		wire.stopMu.Lock()
+		closed := wire.closed
+		wire.stopMu.Unlock()
+		if closed {
+			break
+		}
 		if err := wire.beginReceive(); err != nil {
 			c.log.Warn("MQTT receive deadline failed: %v", err)
 			break
 		}
-		if err := client.HandleNext(); err != nil {
+		err := client.HandleNext()
+		c.publishClientStatus(client)
+		if err != nil {
 			c.log.Warn("MQTT receive stopped: %v (packet_bytes=%d)", err, wire.packetBytes)
 			break
 		}
@@ -428,6 +477,7 @@ func (c *NatiuClient) readLoop(client *native.Client, wire *packetConn, queue ch
 			lastPing = time.Now()
 			pingAt = lastPing
 			pingBytes, pingPackets, lastPacketType = 0, 0, 0
+			c.publishClientStatus(client)
 			c.log.Debug("MQTT PINGREQ write completed")
 		}
 	}
@@ -439,6 +489,9 @@ func (c *NatiuClient) readLoop(client *native.Client, wire *packetConn, queue ch
 			c.log.Warn("MQTT receive cleanup disconnect failed: %v", err)
 		}
 	}
+	// Evaluate the last native observation before defers publish rxDone: no
+	// native method (even Err) is allowed to outlive that ownership barrier.
+	return errors.Is(client.Err(), errShutdown)
 }
 func (c *NatiuClient) dispatch(queue chan incoming, done chan struct{}) {
 	for {
@@ -472,9 +525,12 @@ func (c *NatiuClient) Disconnect() error {
 	l.closed = true
 	client, wire := c.snapshot()
 	var result error
-	graceful := client != nil && client.IsConnected()
+	graceful := client != nil && c.IsConnected()
 	if graceful {
-		result = client.Disconnect(errShutdown)
+		deadline := time.Now().Add(10 * time.Second)
+		timer := time.NewTimer(time.Until(deadline))
+		result = c.requestControl(wire, clientControl{shutdown: true, deadline: deadline}, timer)
+		timer.Stop()
 	}
 	if wire != nil {
 		closeErr := wire.closeCause(4)
@@ -510,7 +566,7 @@ func (c *NatiuClient) Publish(topic string, payload []byte, qos byte, retain boo
 		return errors.New("MQTT publication exceeds firmware limit")
 	}
 	client, wire := c.snapshot()
-	if client == nil || !client.IsConnected() {
+	if client == nil || !c.IsConnected() {
 		return errors.New("MQTT disconnected")
 	}
 	// QoS0 has no native in-flight state. The native success callback only
@@ -527,6 +583,7 @@ func (c *NatiuClient) nextID() uint16 {
 	return c.packetID
 }
 func (c *NatiuClient) Subscribe(topic string, handler MessageHandler) error {
+	deadline := time.Now().Add(10 * time.Second)
 	c.ops.Lock()
 	defer c.ops.Unlock()
 	if handler == nil || topic == "" || len(topic) > 256 || strings.ContainsAny(topic, "+#") {
@@ -540,7 +597,7 @@ func (c *NatiuClient) Subscribe(topic string, handler MessageHandler) error {
 		return errors.New("firmware subscription limit reached")
 	}
 	client, wire := c.snapshot()
-	if client == nil || !client.IsConnected() {
+	if client == nil || !c.IsConnected() {
 		return errors.New("MQTT disconnected")
 	}
 	c.mu.Lock()
@@ -559,51 +616,41 @@ func (c *NatiuClient) Subscribe(topic string, handler MessageHandler) error {
 			c.mu.Unlock()
 		}
 	}()
-	if err := wire.SetWriteDeadline(time.Now().Add(10 * time.Second)); err != nil {
-		return err
-	}
-	id := c.nextID()
-	wire.stopMu.Lock()
-	exhausted := wire.subRequests >= subscriptionBudget
-	if !exhausted {
-		wire.subRequests++
-		wire.subPending = true
-		wire.subID = id
-	}
-	wire.stopMu.Unlock()
-	if exhausted {
-		_ = wire.closeCause(9)
-		_ = client.Disconnect(errors.New("MQTT subscription budget exhausted; reconnect required"))
-		return errors.New("MQTT subscription budget exhausted; reconnect required")
-	}
-	if err := client.StartSubscribe(native.VariablesSubscribe{PacketIdentifier: id, TopicFilters: []native.SubscribeRequest{{TopicFilter: []byte(topic), QoS: native.QoS0}}}); err != nil {
-		_ = wire.closeCause(9)
-		return err
-	}
-	timer := time.NewTimer(10 * time.Second)
+	timer := time.NewTimer(time.Until(deadline))
 	defer timer.Stop()
+	id := c.nextID()
+	if err := c.requestControl(wire, clientControl{topic: topic, id: id, deadline: deadline}, timer); err != nil {
+		return err
+	}
+	var ack subscriptionAck
 	select {
-	case ack := <-c.subacks:
-		if ack.id != id {
-			return errors.New("MQTT subscription acknowledgement identifier mismatch")
-		}
-		if ack.code != byte(native.QoS0) {
-			return fmt.Errorf("MQTT subscription rejected: %s", topic)
-		}
-		success = true
-		return nil
+	case ack = <-c.subacks:
 	case <-c.done:
-		return errors.New("MQTT disconnected during subscription")
+		// The owner may finish a valid SUBACK and EOF before this caller runs.
+		// Preserve that already completed wire result rather than lose it to select.
+		select {
+		case ack = <-c.subacks:
+		default:
+			return errors.New("MQTT disconnected during subscription")
+		}
 	case <-timer.C:
-		_ = wire.closeCause(9)
+		c.abortControl(wire)
 		return errors.New("MQTT subscription timeout")
 	}
+	if ack.id != id {
+		return errors.New("MQTT subscription acknowledgement identifier mismatch")
+	}
+	if ack.code != byte(native.QoS0) {
+		return fmt.Errorf("MQTT subscription rejected: %s", topic)
+	}
+	success = true
+	return nil
 }
 func (c *NatiuClient) Unsubscribe(topic string) error {
 	c.ops.Lock()
 	defer c.ops.Unlock()
 	client, wire := c.snapshot()
-	if client == nil || !client.IsConnected() {
+	if client == nil || !c.IsConnected() {
 		return errors.New("MQTT disconnected")
 	}
 	if topic == "" || len(topic) > 256 {

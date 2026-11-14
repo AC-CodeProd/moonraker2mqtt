@@ -183,12 +183,11 @@ func TestNatiuPingResponseAfterRepeatedIdle(t *testing.T) {
 				}
 				// b.Write returning means bytes were read, not that the
 				// decoder's state callback has run; allow its completion.
-				native, _ := c.snapshot()
 				until := time.Now().Add(time.Second)
-				for native.AwaitingPingresp() && time.Now().Before(until) {
+				for c.observedStatus().awaitingPing && time.Now().Before(until) {
 					time.Sleep(time.Millisecond)
 				}
-				if !c.IsConnected() || native.AwaitingPingresp() {
+				if !c.IsConnected() || c.observedStatus().awaitingPing {
 					t.Fatal("PINGRESP did not clear pending state")
 				}
 			}
@@ -290,9 +289,9 @@ func TestNatiuPingMissingResponseTimesOut(t *testing.T) {
 			case <-time.After(14 * time.Second):
 				t.Fatal("missing PINGRESP did not stop receive loop")
 			}
-			native, _ := c.snapshot()
-			if c.IsConnected() || native.Err() == nil || errors.Is(native.Err(), io.EOF) {
-				t.Fatalf("unexpected timeout state: %v", native.Err())
+			status := c.observedStatus()
+			if c.IsConnected() || status.err == nil || errors.Is(status.err, io.EOF) {
+				t.Fatalf("unexpected timeout state: %v", status.err)
 			}
 			text := logs.text()
 			if !strings.Contains(text, "MQTT ping timeout: wait_ms=") || !strings.Contains(text, "rx_bytes=") || strings.Contains(text, "PINGRESP decoded") {
