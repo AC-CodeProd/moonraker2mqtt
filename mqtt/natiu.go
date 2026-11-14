@@ -83,6 +83,7 @@ type packetConn struct {
 	prefix         [8]byte // maximum fixed header (5) plus single-topic SUBACK (3)
 	prefixLen      int
 	packetBytes    uint32 // diagnostic count, owned by the decoder goroutine
+	frame          receiveFrame
 }
 
 // beginReceive separates idle polling from packet completion. The native
@@ -97,7 +98,7 @@ func (c *packetConn) beginReceive() error {
 
 func (c *packetConn) Read(p []byte) (int, error) {
 	if !c.receive || len(p) == 0 {
-		return c.Conn.Read(p)
+		return c.readFrame(p)
 	}
 	if !c.packetDeadline.IsZero() {
 		deadline := time.Now().Add(receiveProgressTimeout)
@@ -114,7 +115,7 @@ func (c *packetConn) Read(p []byte) (int, error) {
 	if closed {
 		return 0, net.ErrClosed
 	}
-	n, err := c.Conn.Read(p)
+	n, err := c.readFrame(p)
 	c.stopMu.Lock()
 	closed = c.closed
 	c.stopMu.Unlock()
