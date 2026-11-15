@@ -218,6 +218,17 @@ func (s *fakeMoonService) stop(t *testing.T) {
 		t.Errorf("pipeline HTTP fixture failed: %v", err)
 	}
 }
+func writeOfflinePacket(w io.Writer, packet []byte) error {
+	n, err := w.Write(packet)
+	if err != nil {
+		return err
+	}
+	if n != len(packet) {
+		return io.ErrShortWrite
+	}
+	return nil
+}
+
 func readOfflinePacket(r *bufio.Reader) (byte, []byte, error) {
 	h, e := r.ReadByte()
 	if e != nil {
@@ -286,7 +297,13 @@ func TestOfflineMoonrakerRestartActualPipeline(t *testing.T) {
 			switch h >> 4 {
 			case 1:
 				connects++
-				_, _ = c.Write([]byte{0x20, 2, 0, 0})
+				if err := writeOfflinePacket(c, []byte{0x20, 2, 0, 0}); err != nil {
+					if ctx.Err() == nil || !pipelinePeerShutdown(err) {
+						t.Errorf("pipeline MQTT fixture CONNACK write failed: %v", err)
+						cancel()
+					}
+					return
+				}
 			case 3:
 				if len(p) >= 2 {
 					n := int(binary.BigEndian.Uint16(p))
@@ -299,7 +316,13 @@ func TestOfflineMoonrakerRestartActualPipeline(t *testing.T) {
 					}
 				}
 			case 12:
-				_, _ = c.Write([]byte{0xd0, 0})
+				if err := writeOfflinePacket(c, []byte{0xd0, 0}); err != nil {
+					if ctx.Err() == nil || !pipelinePeerShutdown(err) {
+						t.Errorf("pipeline MQTT fixture PINGRESP write failed: %v", err)
+						cancel()
+					}
+					return
+				}
 			case 14:
 				return
 			}

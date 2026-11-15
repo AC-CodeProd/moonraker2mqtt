@@ -3,6 +3,7 @@
 package bridge
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -12,6 +13,54 @@ import (
 	"testing"
 	"time"
 )
+
+type pipelinePacketWriter struct {
+	n     int
+	err   error
+	calls int
+	data  bytes.Buffer
+}
+
+func (w *pipelinePacketWriter) Write(p []byte) (int, error) {
+	w.calls++
+	if w.n < 0 || w.n > len(p) {
+		panic("invalid fixture count")
+	}
+	if _, err := w.data.Write(p[:w.n]); err != nil {
+		return 0, err
+	}
+	return w.n, w.err
+}
+
+func TestPipelineBrokerPacketWrites(t *testing.T) {
+	sentinel := errors.New("packet write failed")
+	for _, packet := range [][]byte{{0x20, 2, 0, 0}, {0xd0, 0}} {
+		for _, tc := range []struct {
+			name      string
+			n         int
+			err, want error
+		}{
+			{"full", len(packet), nil, nil},
+			{"short", len(packet) - 1, nil, io.ErrShortWrite},
+			{"zero", 0, nil, io.ErrShortWrite},
+			{"partial-error", 1, sentinel, sentinel},
+			{"full-error", len(packet), sentinel, sentinel},
+			{"closed-error", 0, net.ErrClosed, net.ErrClosed},
+			{"timeout-error", 0, os.ErrDeadlineExceeded, os.ErrDeadlineExceeded},
+		} {
+			t.Run(fmt.Sprintf("%x/%s", packet[0], tc.name), func(t *testing.T) {
+				w := &pipelinePacketWriter{n: tc.n, err: tc.err}
+				err := writeOfflinePacket(w, packet)
+				if !errors.Is(err, tc.want) || w.calls != 1 || !bytes.Equal(w.data.Bytes(), packet[:tc.n]) {
+					t.Fatalf("write result lost: err=%v calls=%d bytes=%x", err, w.calls, w.data.Bytes())
+				}
+				if tc.err != nil && err != tc.err {
+					t.Fatal("primary write error replaced")
+				}
+			})
+		}
+	}
+}
 
 func TestPipelinePeerShutdownClassification(t *testing.T) {
 	for _, tc := range []struct {
