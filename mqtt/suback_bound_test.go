@@ -9,6 +9,8 @@ import (
 	"io"
 	"net"
 	"strconv"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -17,9 +19,10 @@ import (
 
 type subackBoundConn struct {
 	net.Conn
-	input                        bytes.Reader
-	readBytes, readCalls, closes int
-	maxRead                      int
+	input                bytes.Reader
+	readBytes, readCalls int
+	closes               atomic.Uint32
+	maxRead              int
 }
 
 func (s *subackBoundConn) Read(p []byte) (int, error) {
@@ -32,10 +35,35 @@ func (s *subackBoundConn) Read(p []byte) (int, error) {
 	return n, err
 }
 func (s *subackBoundConn) Write(p []byte) (int, error)    { return len(p), nil }
-func (s *subackBoundConn) Close() error                   { s.closes++; return nil }
+func (s *subackBoundConn) Close() error                   { s.closes.Add(1); return nil }
 func (*subackBoundConn) SetDeadline(time.Time) error      { return nil }
 func (*subackBoundConn) SetReadDeadline(time.Time) error  { return nil }
 func (*subackBoundConn) SetWriteDeadline(time.Time) error { return nil }
+
+func TestSubackBoundConcurrentCloseCountsEveryCall(t *testing.T) {
+	const WORKERS = 8
+	const CALLS_PER_WORKER = 1024
+	raw := &subackBoundConn{}
+	start := make(chan struct{})
+	var workers sync.WaitGroup
+	for range WORKERS {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			<-start
+			for range CALLS_PER_WORKER {
+				if err := raw.Close(); err != nil {
+					t.Errorf("fixture Close failed: %v", err)
+				}
+			}
+		}()
+	}
+	close(start)
+	workers.Wait()
+	if got := raw.closes.Load(); got != WORKERS*CALLS_PER_WORKER {
+		t.Fatalf("lost concurrent Close calls: got=%d want=%d", got, WORKERS*CALLS_PER_WORKER)
+	}
+}
 
 func subackBoundHeader(length uint32) []byte {
 	h := []byte{0x90}
