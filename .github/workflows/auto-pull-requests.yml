@@ -15,8 +15,24 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  lint:
+    uses: ./.github/workflows/lint.yml
+    permissions:
+      contents: read
+
   test:
+    name: Go tests (${{ matrix.variant }})
     runs-on: ubuntu-latest
+    continue-on-error: false
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - variant: host
+            extra-args: ""
+          # Hosted adapter execution, not a TinyGo target or hardware qualification.
+          - variant: mcu-adapters
+            extra-args: -tags=natiu,lowmem,native_storage_fixture
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -43,10 +59,10 @@ jobs:
           fi
 
       - name: Run go vet
-        run: go vet ./...
+        run: go vet ${{ matrix.extra-args }} ./...
 
       - name: Run tests
-        run: go test -v -race -coverprofile=coverage.out ./...
+        run: go test -count=1 -v -race ${{ matrix.extra-args }} -coverprofile=coverage.out ./...
 
       - name: Check test coverage
         run: |
@@ -60,12 +76,12 @@ jobs:
       - name: Upload coverage to artifact
         uses: actions/upload-artifact@v4
         with:
-          name: coverage-report
+          name: coverage-report-${{ matrix.variant }}
           path: coverage.out
 
   open-or-update-pull-request:
     runs-on: ubuntu-latest
-    needs: test
+    needs: [test, lint]
     steps:
       - name: Extract branch
         id: ctx
@@ -99,7 +115,8 @@ jobs:
               "✅ **Tests Status:**",
               "- Code formatting: Verified",
               "- Static analysis (go vet): Passed", 
-              "- Unit tests: Passed",
+              "- Static analysis (golangci-lint): Passed (host and MCU adapters)",
+              "- Unit tests with race detector: Passed (host and MCU adapters)",
               "- Test coverage: Generated (see artifacts)",
               "",
               "📋 **Next Steps:**",

@@ -41,7 +41,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
                 -X '${PKG_VER}.BuildDate=${BUILD_DATE}' \
                 -X '${PKG_VER}.GitCommit=${VCS_REF}' \
                 -X '${PKG_VER}.GitURL=${VCS_URL}'" \
-      -o /out/moonraker2mqtt ./cmd/main.go
+      -o /out/moonraker2mqtt ./cmd/moonraker2mqtt
 
 RUN mkdir -p /out/logs \
  && ln -sf /dev/stdout /out/logs/moonraker2mqtt.log

@@ -1,0 +1,5 @@
+package diagjson
+
+import "encoding/json"
+
+func Marshal(producer uintptr, v any) ([]byte, error) { return json.Marshal(v) }

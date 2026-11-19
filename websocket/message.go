@@ -1,6 +1,8 @@
 package websocket
 
-import "encoding/json"
+import (
+	"moonraker2mqtt/internal/diagjson"
+)
 
 func (e *RPCError) Error() string {
 	return e.Message
@@ -8,7 +10,7 @@ func (e *RPCError) Error() string {
 
 func (m *WebSocketMessage) MarshalJSON() ([]byte, error) {
 	type Alias WebSocketMessage
-	return json.Marshal(&struct {
+	return diagjson.Marshal(5, &struct {
 		*Alias
 		JSONRPC string `json:"jsonrpc"`
 	}{

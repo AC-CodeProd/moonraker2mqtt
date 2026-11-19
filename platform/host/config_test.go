@@ -1,4 +1,6 @@
-package main
+//go:build !tinygo
+
+package host
 
 import (
 	"os"
@@ -43,12 +45,12 @@ logging:
 		return
 	}
 
-	if app.config.Environment != "testing" {
-		t.Errorf("Expected environment 'testing', got '%s'", app.config.Environment)
+	if app.Configuration().Environment != "testing" {
+		t.Errorf("Expected environment 'testing', got '%s'", app.Configuration().Environment)
 	}
 
-	if app.config.MQTT.ClientID != "test-client" {
-		t.Errorf("Expected client ID 'test-client', got '%s'", app.config.MQTT.ClientID)
+	if app.Configuration().MQTT.ClientID != "test-client" {
+		t.Errorf("Expected client ID 'test-client', got '%s'", app.Configuration().MQTT.ClientID)
 	}
 }
 
@@ -209,15 +211,15 @@ func TestDefaultConfigGeneration(t *testing.T) {
 		return
 	}
 
-	if app.config.Environment != "development" {
-		t.Errorf("Expected default environment 'development', got '%s'", app.config.Environment)
+	if app.Configuration().Environment != "development" {
+		t.Errorf("Expected default environment 'development', got '%s'", app.Configuration().Environment)
 	}
 
-	if app.config.Moonraker.Port != 7125 {
-		t.Errorf("Expected default Moonraker port 7125, got %d", app.config.Moonraker.Port)
+	if app.Configuration().Moonraker.Port != 7125 {
+		t.Errorf("Expected default Moonraker port 7125, got %d", app.Configuration().Moonraker.Port)
 	}
 
-	if app.config.MQTT.Port != 1883 {
-		t.Errorf("Expected default MQTT port 1883, got %d", app.config.MQTT.Port)
+	if app.Configuration().MQTT.Port != 1883 {
+		t.Errorf("Expected default MQTT port 1883, got %d", app.Configuration().MQTT.Port)
 	}
 }

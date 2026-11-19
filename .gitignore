@@ -26,9 +26,30 @@
 
 !.github/workflows/release-please.yml
 !.github/workflows/auto-pull-requests.yml
+!.github/workflows/lint.yml
+!/.golangci.yml
 !.release-please-config.json
 !.release-please-manifest.json
 !VERSION
 !Dockerfile
 !.dockerignore
 tmp
+# Local host/firmware build artifacts (may embed credentials)
+/build/
+/builds/
+# Firmware safety sources (keep build artifacts ignored).
+!/platform/esp32s3/settings_hw.c
+!/platform/esp32s3/radio_state.c
+!/targets/esp32s3-settings.ld
+!/targets/esp32s3-settings.json
+!/targets/settings-vectors.S
+!/websocket/wire/lowmem/LICENSE
+# Keep private documentation/tools and local dependency copies out of Git.
+/docs/
+/tools/
+# Dependencies use official modules; exclude third_party at every depth.
+third_party/
+# Never include generated logs, Python bytecode or embedded credential artifacts.
+__pycache__/
+*.pyc
+/logs/
