@@ -26,5 +26,5 @@ firmware:
 	docker run --rm --pull=never --network=none --read-only --user "$$(id -u):$$(id -g)" --cap-drop=ALL --security-opt=no-new-privileges --entrypoint /bin/sh \
 		-v "$(CURDIR):/src:ro" -v "$(MODULE_CACHE):/modules:ro" -v "$(FIRMWARE_OUTPUT):/out:rw" \
 		-e HOME=/out/home -e XDG_CACHE_HOME=/out/cache -e GOCACHE=/out/cache/go -e TMPDIR=/out/tmp -e GOPATH=/out/gopath -e GOMODCACHE=/modules \
-		-e GOPROXY=off -e GOSUMDB=off -e GOTOOLCHAIN=local -e GOTELEMETRY=off -e GOWORK=off -e GOFLAGS= -e GOEXPERIMENT=jsonv2 -e FIRMWARE_LDFLAGS \
+		-e GOPROXY=off -e GOSUMDB=off -e GOTOOLCHAIN=local -e GOTELEMETRY=off -e GOWORK=off -e GOFLAGS= -e GOEXPERIMENT=nojsonv2 -e FIRMWARE_LDFLAGS \
 		-w /src $(TINYGO_IMAGE) -ec 'umask 077; tinygo version; go version; tinygo build -target=/out/target.json -scheduler=tasks -stack-size=8kb -opt=z -size=short -ldflags="$$FIRMWARE_LDFLAGS" -o /out/firmware.elf ./cmd/moonraker2mqtt-esp32; cp /out/firmware.map /out/firmware-elf.map; tinygo build -target=/out/target.json -scheduler=tasks -stack-size=8kb -opt=z -size=short -ldflags="$$FIRMWARE_LDFLAGS" -o /out/firmware-raw.bin ./cmd/moonraker2mqtt-esp32'
